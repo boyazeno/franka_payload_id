@@ -1,0 +1,35 @@
+# Robot connection and safety settings for the data-collection binaries.
+
+# FCI IP address. The lab Panda is documented at 172.16.0.2
+# (/cshome/cs-hardware/robot-arms/PANDA/panda_minimal_example/main.cpp).
+fci_ip: "172.16.0.2"
+
+# Number of past states libfranka keeps for the ControlException post-mortem log.
+# Default is 50; we want several seconds so a reflex still yields usable data.
+log_size: 5000
+
+# Global speed derating applied by fpi_move_to / fpi_static_poses (0..1).
+# Start at 0.1-0.2 for first runs on hardware.
+move_speed_factor: 0.15
+
+# Collision behaviour thresholds passed to Robot::setCollisionBehavior.
+# Raised well above defaults: we are deliberately carrying an *unmodelled* payload
+# (configured load is zeroed during collection), so the robot's own estimate of
+# external torque is large by construction and default thresholds would trip a
+# joint_reflex immediately.
+collision:
+  lower_torque_thresholds_acceleration: [40.0, 40.0, 36.0, 36.0, 24.0, 20.0, 18.0]
+  upper_torque_thresholds_acceleration: [40.0, 40.0, 36.0, 36.0, 24.0, 20.0, 18.0]
+  lower_torque_thresholds_nominal:      [40.0, 40.0, 36.0, 36.0, 24.0, 20.0, 18.0]
+  upper_torque_thresholds_nominal:      [40.0, 40.0, 36.0, 36.0, 24.0, 20.0, 18.0]
+  lower_force_thresholds_acceleration:  [40.0, 40.0, 40.0, 50.0, 50.0, 50.0]
+  upper_force_thresholds_acceleration:  [40.0, 40.0, 40.0, 50.0, 50.0, 50.0]
+  lower_force_thresholds_nominal:       [40.0, 40.0, 40.0, 50.0, 50.0, 50.0]
+  upper_force_thresholds_nominal:       [40.0, 40.0, 40.0, 50.0, 50.0, 50.0]
+
+# Internal joint impedance used by the position motion generator.
+joint_impedance: [3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]
+
+# Zero the configured load during BOTH collection runs so the internal controller
+# behaves identically with and without the tool. See docs/THEORY.md section 4.
+zero_load_during_collection: true

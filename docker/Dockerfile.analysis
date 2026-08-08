@@ -1,0 +1,49 @@
+# Offline analysis image: Pinocchio + cvxpy + scipy.
+#
+# Contains NO libfranka and needs no robot. Builds and runs anywhere, which is the
+# point: essentially all development and every test happens here.
+FROM python:3.11-slim-bookworm
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+# libgomp1 is the OpenMP runtime that Pinocchio's compiled extension links against;
+# python:*-slim does not ship it and the import fails with
+# "libgomp.so.1: cannot open shared object file".
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 libgl1 libglib2.0-0 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Dependencies first so edits to source do not invalidate the layer.
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY pyproject.toml /app/pyproject.toml
+COPY README.md      /app/README.md
+COPY python/        /app/python/
+COPY config/        /app/config/
+COPY assets/        /app/assets/
+COPY tests/         /app/tests/
+COPY scripts/       /app/scripts/
+# Headers only, no sources and no libfranka: the record layout is a contract between the
+# two languages, and test_cpp_and_python_agree_on_the_record_width checks it. Shipping
+# the header keeps that check unconditional instead of letting it skip in this image.
+COPY cpp/include/   /app/cpp/include/
+
+RUN pip install --no-cache-dir --no-deps -e /app
+
+# Run as a non-root user matching the host so bind-mounted results are not root-owned.
+RUN groupadd -g ${USER_GID} fpi 2>/dev/null || true \
+ && useradd -m -u ${USER_UID} -g ${USER_GID} fpi 2>/dev/null || true \
+ && mkdir -p /data && chown -R ${USER_UID}:${USER_GID} /data /app
+USER ${USER_UID}:${USER_GID}
+
+ENV PYTHONUNBUFFERED=1 \
+    FPI_CONFIG_DIR=/app/config \
+    FPI_ASSET_DIR=/app/assets \
+    FPI_DATA_DIR=/data
+
+CMD ["pytest", "-q"]

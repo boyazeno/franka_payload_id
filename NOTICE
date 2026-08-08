@@ -1,0 +1,25 @@
+franka_payload_id
+=================
+
+This project vendors two files from libfranka (https://github.com/frankaemika/libfranka),
+which is licensed under the Apache License 2.0:
+
+  cpp/include/fpi/motion_generator.hpp   <- examples/examples_common.h
+  cpp/src/motion_generator.cpp           <- examples/examples_common.cpp
+
+They provide the fifth-order joint point-to-point `MotionGenerator` and
+`setDefaultBehavior`, taken from libfranka 0.9.2. Only the include path was changed.
+
+  Copyright (c) 2017 Franka Emika GmbH
+  Licensed under the Apache-2.0 license; see the libfranka LICENSE file.
+
+The Panda URDF in assets/panda_arm.urdf is derived from franka_ros'
+franka_description (Apache-2.0). Its link inertial parameters are NOT manufacturer
+data; they come from the identification published in:
+
+  C. Gaz, M. Cognetti, A. Oliva, P. Robuffo Giordano, A. De Luca,
+  "Dynamic Identification of the Franka Emika Panda Robot With Retrieval of Feasible
+  Parameters Using Penalty-Based Optimization", IEEE RA-L 4(4):4147-4154, 2019.
+
+They are used here only as a prior and for torque budgeting. The difference-of-torques
+estimator does not depend on them.

@@ -1,0 +1,39 @@
+# Official Franka Emika Panda (FER) joint limits.
+#
+# Source: Franka Control Interface documentation, "Limits for Panda"
+#   docs/source/control-parameters-joint-panda.csv
+#   (local copy: /cshome/cs-hardware/robot-arms/PANDA/franka-repos-2024-01-15/docs/source/)
+#
+# These are the PANDA numbers. FR3 differs (notably q_dot_max and q_ddot_max) --
+# do not substitute FR3 values.
+#
+# Note the asymmetry: joint 4 is entirely negative, joint 6 almost entirely
+# positive. Assuming symmetric ranges is a classic source of
+# joint_motion_generator_position_limits_violation.
+
+robot: panda
+
+# rad
+q_min: [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973]
+q_max: [ 2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973]
+
+# rad/s
+qd_max: [2.1750, 2.1750, 2.1750, 2.1750, 2.6100, 2.6100, 2.6100]
+
+# rad/s^2
+qdd_max: [15.0, 7.5, 10.0, 12.5, 15.0, 20.0, 20.0]
+
+# rad/s^3
+qddd_max: [7500.0, 3750.0, 5000.0, 6250.0, 7500.0, 10000.0, 10000.0]
+
+# Nm
+tau_max: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
+
+# Nm/s
+taud_max: [1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0]
+
+# Joint 4 angle of maximum arm extension; used to determine elbow flip direction.
+q_elbow_flip: -0.467002423653011
+
+# Rated payload [kg]
+rated_payload: 3.0

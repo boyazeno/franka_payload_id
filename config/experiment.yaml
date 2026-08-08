@@ -1,0 +1,114 @@
+# Trajectory design, signal processing and estimator settings.
+# Defaults follow docs/THEORY.md; every value here has a stated reason.
+
+# ---------------------------------------------------------------------------
+# Stage A -- static gravity identification of m and c
+# ---------------------------------------------------------------------------
+static:
+  n_poses: 50                  # 40-60; orientation spread is what makes CoM observable
+  dwell_s: 2.0                 # hold time per pose
+  average_window_s: 1.0        # average tau_J over the middle of the dwell
+  bidirectional: true          # visit each pose from two opposite directions and average,
+                               # cancelling Coulomb/stiction hysteresis to first order
+  approach_offset_rad: 0.08    # how far to back off before the second approach
+  seed: 0
+
+# ---------------------------------------------------------------------------
+# Stage B -- dynamic identification of the full 10 parameters
+# ---------------------------------------------------------------------------
+trajectory:
+  n_harmonics: 5               # Swevers; 4-7 is the useful range
+  base_frequency_hz: 0.2       # T = 5 s. Bandwidth N*f_f = 1 Hz, safely below the
+                               # ~10-20 Hz joint flexibility modes
+  n_periods: 10                # averaging gains sqrt(10) ~ 3.2x and yields the noise
+                               # covariance estimate for the WLS weights
+  sample_rate_hz: 1000         # robot native
+
+  # Fraction of the official Panda limits the optimiser is allowed to use.
+  derate:
+    position: 0.85             # applied to the distance from the joint centre to its limit
+    velocity: 0.40
+    acceleration: 0.30
+    jerk: 0.30
+    torque: 0.50
+
+  # Collocation points per period for constraint evaluation. Constraints are checked
+  # on a much denser grid afterwards by the exporter.
+  n_collocation: 60
+
+  optimizer:
+    objective: d_optimal       # d_optimal | condition | hybrid
+    length_scale: 0.1          # L in the column scaling diag(1,L,L,L,L^2,...); ~ tool size.
+                               # Without this, any reported condition number is meaningless.
+    n_restarts: 8
+    max_iter: 300
+    seed: 0
+    # Advisory only -- `fpi traj generate` prints a note above this, nothing refuses.
+    # Measured achievable value for the 10-column payload regressor on this robot, at
+    # 30-40 % of the acceleration limits, is roughly 145-190 with L = 0.1 m. Values in
+    # the 5-30 range quoted in the literature are for full-robot base-parameter
+    # regressors, which is a different (and better conditioned) problem.
+    #
+    # Note the condition number is NOT scale-free: it depends on length_scale above and
+    # is only comparable between runs sharing it. The meaningful per-parameter quality
+    # measure is the relative standard deviation reported in the final report.
+    target_condition: 200.0
+
+# ---------------------------------------------------------------------------
+# Signal processing (Gautier's recipe -- see docs/THEORY.md section 9)
+# ---------------------------------------------------------------------------
+preprocess:
+  filter_order: 4              # Butterworth, applied zero-phase via filtfilt
+  cutoff_hz: 10.0              # ~10x the 1 Hz trajectory bandwidth, below the structural modes
+  decimate_to_hz: 100.0        # ~2*cutoff. Skipping this makes the covariance optimistic
+                               # by sqrt(1000/20) ~ 7x
+  drop_first_period: true
+  edge_trim_s: 0.5             # discard filter edge transients at both ends
+  zero_velocity_threshold: 0.05  # rad/s; rows of joint j with |qd_j| below this are dropped,
+                               # because Coulomb friction is discontinuous at zero crossings
+                               # and does not cancel there between the two runs
+
+# ---------------------------------------------------------------------------
+# Estimators
+# ---------------------------------------------------------------------------
+estimator:
+  method: sdp                  # sdp | logchol | wls | ols
+  weighting: per_joint         # none | per_joint (1/sigma_j from across-period variance)
+  robust: huber                # none | huber
+  huber_delta_scale: 1.345     # in units of sigma
+  irls_iterations: 3
+
+  sdp:
+    solver: CLARABEL           # CLARABEL, fallback SCS
+    psd_epsilon: 1.0e-9
+    use_entropic_prior: true   # log-det Bregman divergence toward the bounding-box prior
+    gamma: null                # null => choose by leave-one-trajectory-out cross-validation
+    gamma_grid: [1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1, 1.0]
+    use_bounding_ellipsoid: true
+
+  logchol:
+    max_iter: 500
+    x_tol: 1.0e-12
+
+# ---------------------------------------------------------------------------
+# Validation and reporting
+# ---------------------------------------------------------------------------
+validation:
+  sigma_threshold_pct: 30.0    # Gautier: above this the parameter is not identified and
+                               # is reported as "prior-dominated" rather than as a result
+  bootstrap_samples: 500       # resample the periods with replacement for honest intervals
+  condition_warn: 50.0
+  condition_fail: 500.0
+
+# ---------------------------------------------------------------------------
+# Synthetic data generator (hardware-free testing)
+# ---------------------------------------------------------------------------
+synthetic:
+  torque_noise_nm: [0.10, 0.10, 0.10, 0.10, 0.05, 0.05, 0.05]
+  encoder_noise_rad: 1.0e-5
+  friction_coulomb_nm: [0.35, 0.35, 0.30, 0.30, 0.15, 0.12, 0.10]
+  friction_viscous_nms: [0.05, 0.05, 0.04, 0.04, 0.02, 0.02, 0.02]
+  friction_load_sensitivity: 0.03   # fraction by which Coulomb friction grows with the tool,
+                                    # i.e. the part the difference method does NOT cancel
+  thermal_drift_nm_per_s: 0.002     # slow bias drift, cancelled by interleaved runs
+  seed: 0

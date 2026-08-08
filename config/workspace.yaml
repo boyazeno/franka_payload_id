@@ -1,0 +1,66 @@
+# Cartesian workspace constraints, expressed as half-spaces in the ROBOT BASE frame
+# (panda_link0). A configuration is allowed only if, for every monitored point p and
+# every half-space,
+#
+#     n . p + d  >=  margin + r
+#
+# where n is the inward-pointing unit normal (pointing into the free space), d the
+# offset, r the radius of the monitored sphere, and margin the safety clearance.
+#
+# ############################################################################
+# THESE ARE DELIBERATELY CONSERVATIVE PLACEHOLDERS.
+#
+# The robot stands in the corner of two walls facing outwards. Until the real wall
+# planes have been measured on the robot PC, this file restricts motion to a
+# generous front half-space so that nothing can be generated that swings backwards.
+# Replace `walls` with the measured planes before running BU5.
+#
+# To measure: jog the flange until it just touches each wall at three well-separated
+# points, record O_T_EE at each, and fit a plane. `fpi fit-plane` does the fitting.
+# ############################################################################
+
+# Safety clearance added on top of every monitored sphere radius [m].
+margin: 0.10
+
+# Placeholder geometry assumes the base stands 0.30 m clear of each wall, with the
+# base +x axis pointing away from the corner. Combined with the joint_box below this
+# keeps the arm in the forward sector without collapsing the reachable workspace --
+# a wall plane placed in FRONT of the base would leave nothing to move in.
+walls:
+  - name: wall_behind          # the wall the robot's back faces
+    normal: [1.0, 0.0, 0.0]
+    offset: 0.30              # n.p + d >= 0  <=>  x >= -0.30
+    measured: false
+
+  - name: wall_side           # the wall to the robot's right
+    normal: [0.0, 1.0, 0.0]
+    offset: 0.30              # n.p + d >= 0  <=>  y >= -0.30
+    measured: false
+
+# Table / mounting surface. The base sits on it, so this is a floor constraint.
+table:
+  name: table
+  normal: [0.0, 0.0, 1.0]
+  offset: -0.02             # z >= 0.02 m above the base frame origin
+  measured: false
+
+# Belt-and-braces hard joint box, applied in ADDITION to the half-spaces and
+# independently of the trajectory optimiser's solution quality. Restricting the base
+# rotation guarantees the arm can never sweep towards either wall even if the NLP
+# returns something unexpected. Units: rad.
+joint_box:
+  q1_min: -1.0472          # -60 deg
+  q1_max:  1.0472          # +60 deg
+
+# Points on the robot that are checked against the half-spaces. Each entry is a frame
+# name plus a sphere radius that bounds the surrounding link geometry. Radii are taken
+# from the self-collision capsules in franka_description/robots/common/franka_arm.xacro.
+monitored_points:
+  - {frame: panda_link3, offset: [0.0, 0.0, 0.0],  radius: 0.09}
+  - {frame: panda_link4, offset: [0.0, 0.0, 0.0],  radius: 0.09}
+  - {frame: panda_link5, offset: [0.0, 0.0, -0.16], radius: 0.075}
+  - {frame: panda_link5, offset: [0.0, 0.0, 0.0],  radius: 0.075}
+  - {frame: panda_link6, offset: [0.0, 0.0, 0.0],  radius: 0.08}
+  - {frame: panda_link7, offset: [0.0, 0.0, 0.0],  radius: 0.07}
+  - {frame: panda_link8, offset: [0.0, 0.0, 0.0],  radius: 0.05}
+  # The tool itself is appended automatically from config/tool.yaml.

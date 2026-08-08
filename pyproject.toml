@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "franka_payload_id"
+version = "0.1.0"
+description = "Payload inertial-parameter identification for the Franka Emika Panda"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pin>=3.2",          # Pinocchio python bindings; `import pinocchio`
+    "pyyaml>=6.0",
+    "pandas>=2.1",
+    "pyarrow>=15",
+    "cvxpy>=1.5",
+    "clarabel>=0.9",
+    "scs>=3.2",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+viz = ["meshcat>=0.3.2"]
+dev = ["pytest>=7.4", "pytest-xdist"]
+
+[project.scripts]
+fpi = "franka_payload_id.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

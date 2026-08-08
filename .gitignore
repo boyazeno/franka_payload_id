@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+cpp/build/
+.pytest_cache/
+.ruff_cache/
+
+# Collected data and results are not source.
+data/raw/*
+data/processed/*
+data/results/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/results/.gitkeep
+
+*.parquet
+*.bin

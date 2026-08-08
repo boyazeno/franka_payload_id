@@ -1,0 +1,48 @@
+# Two independent services sharing ./data as a bind mount.
+#
+#   docker compose build analysis          # works anywhere, no robot needed
+#   docker compose run --rm analysis pytest -q
+#   docker compose build robot             # only useful on the robot PC
+#   docker compose run --rm robot fpi_check --ip 172.16.0.2
+
+services:
+  analysis:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.analysis
+      args:
+        USER_UID: "${UID:-1000}"
+        USER_GID: "${GID:-1000}"
+    image: fpi-analysis:latest
+    volumes:
+      - ../data:/data
+      - ../python:/app/python:ro
+      - ../tests:/app/tests:ro
+      - ../config:/app/config:ro
+      - ../scripts:/app/scripts:ro
+    working_dir: /app
+    environment:
+      FPI_DATA_DIR: /data
+
+  robot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.robot
+      args:
+        USER_UID: "${UID:-1000}"
+        USER_GID: "${GID:-1000}"
+    image: fpi-robot:0.9.2
+    # FCI is TCP 1337 + UDP 1338 at 1 kHz; bridge NAT causes
+    # communication_constraints_violation.
+    network_mode: host
+    # libfranka's control loop requests SCHED_FIFO. Docker drops CAP_SYS_NICE by
+    # default and caps RLIMIT_RTPRIO at 0.
+    cap_add:
+      - SYS_NICE
+    ulimits:
+      rtprio: 99
+      rttime: -1
+      memlock: -1
+    volumes:
+      - ../data:/data
+    working_dir: /data
