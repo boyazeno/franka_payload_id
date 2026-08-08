@@ -67,6 +67,12 @@ class RunMetadata:
     sample_rate_hz: float = 1000.0
     samples_per_period: int = 0
     n_periods: int = 0
+    n_blocks: int = 1
+    """How many separate collection blocks this log concatenates.
+
+    Under the ABBA schedule the settling period must be dropped from each
+    block, not just the first, or the drift cancellation is unbalanced.
+    """
     trajectory: dict = field(default_factory=dict)
     # Configured end-effector / load state at collection time. These MUST be identical
     # (and normally zero) across a loaded/bare pair, or the internal controller behaves

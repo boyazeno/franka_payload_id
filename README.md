@@ -118,14 +118,20 @@ fpi_run_trajectory --ip 172.16.0.2 --traj /data/raw/excite.csv \
                    --out /data/raw/dryrun --loaded --dry-run 0.2
 
 # 4. collect. Warm up 15-20 min first, and INTERLEAVE the runs (see below).
+#    ...or just use scripts/run_campaign.sh, which sequences the ABBA blocks for you.
+fpi_run_trajectory --ip 172.16.0.2 --traj /data/raw/excite.csv --out /data/raw/dyn_loaded_1 --loaded
+#    >>> remove the tool <<<
+fpi_run_trajectory --ip 172.16.0.2 --traj /data/raw/excite.csv --out /data/raw/dyn_bare_1   --bare
+fpi_run_trajectory --ip 172.16.0.2 --traj /data/raw/excite.csv --out /data/raw/dyn_bare_2   --bare
+fpi_static_poses   --ip 172.16.0.2 --poses /data/raw/poses.csv --out /data/raw/static_bare  --bare
+#    >>> attach the tool <<<
+fpi_run_trajectory --ip 172.16.0.2 --traj /data/raw/excite.csv --out /data/raw/dyn_loaded_2 --loaded
 fpi_static_poses   --ip 172.16.0.2 --poses /data/raw/poses.csv --out /data/raw/static_loaded --loaded
-fpi_static_poses   --ip 172.16.0.2 --poses /data/raw/poses.csv --out /data/raw/static_bare   --bare
-fpi_run_trajectory --ip 172.16.0.2 --traj  /data/raw/excite.csv --out /data/raw/dyn_loaded   --loaded
-fpi_run_trajectory --ip 172.16.0.2 --traj  /data/raw/excite.csv --out /data/raw/dyn_bare     --bare
 
 # 5. identify
-fpi ident run --static-loaded  data/raw/static_loaded --static-bare  data/raw/static_bare \
-              --dynamic-loaded data/raw/dyn_loaded    --dynamic-bare data/raw/dyn_bare \
+fpi ident run --static-loaded  data/raw/static_loaded --static-bare data/raw/static_bare \
+              --dynamic-loaded data/raw/dyn_loaded_1,data/raw/dyn_loaded_2 \
+              --dynamic-bare   data/raw/dyn_bare_1,data/raw/dyn_bare_2 \
               --out data/results
 ```
 
@@ -148,11 +154,23 @@ because `loadModel()` downloads a shared object at runtime.
 These are not polish. Each was measured to change the answer:
 
 1. **Warm up 15–20 minutes.** Harmonic-drive friction falls noticeably as joints warm.
-2. **Interleave the loaded and bare runs, alternating which goes first** —
-   `L B, B L, L B, …`. This makes the two configurations' mean collection times equal so
-   thermal drift cancels *exactly*. Always putting the same one first leaves a constant
-   offset; collecting all of one then all of the other is far worse. In the self-test this
-   single choice changes the inertia error by more than an order of magnitude.
+2. **Collect the dynamic stage in four blocks ordered `L B B L`** (ABBA), not
+   `L B L B` and certainly not `L L B B`. This equalises the two configurations' mean
+   collection times so thermal drift cancels *exactly* — and it stays exact even though
+   the tool swaps take minutes, because the two swaps sit symmetrically about the middle.
+   It also needs only two tool changes, since the middle `B B` pair is contiguous.
+   In the self-test this single choice changes the inertia error by more than an order of
+   magnitude. `scripts/run_campaign.sh` walks you through it.
+
+   Pass the blocks as a comma-separated list; the pipeline concatenates them and drops
+   the settling period from *each* block, which is what keeps the balance intact:
+
+   ```
+   fpi ident run --dynamic-loaded data/raw/dyn_loaded_1,data/raw/dyn_loaded_2 \
+                 --dynamic-bare   data/raw/dyn_bare_1,data/raw/dyn_bare_2
+   ```
+
+   The static stage does not need this: its gravity signal is ~50x the drift residual.
 3. **Zero the configured load in both runs** (the collector does this unless you pass
    `--no-zero-load`). Different load settings mean the internal controller tracks
    differently in each run, so the difference is no longer the payload alone. `assess_run`

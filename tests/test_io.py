@@ -147,6 +147,50 @@ def test_nonzero_configured_load_is_rejected(rng):
     assert any("configured total load" in p for p in report.problems)
 
 
+# ---------------------------------------------------------------- block concatenation
+def test_concatenate_blocks(tmp_path, rng):
+    """Each configuration is collected in several blocks under the ABBA schedule."""
+    from franka_payload_id.pipeline import concatenate_runs
+
+    paths = []
+    for i in range(2):
+        meta = RunMetadata(run_id=f"blk{i}", loaded=True, samples_per_period=50,
+                           n_periods=4, sample_rate_hz=1000.0)
+        save_run(tmp_path / f"blk{i}", _records(200, rng=rng), meta)
+        paths.append(tmp_path / f"blk{i}")
+
+    merged = concatenate_runs(paths)
+    assert merged.n_samples == 400
+    assert merged.meta.n_blocks == 2
+    assert merged.meta.n_periods == 8
+
+
+def test_concatenate_rejects_mismatched_blocks(tmp_path, rng):
+    from franka_payload_id.pipeline import concatenate_runs
+
+    save_run(tmp_path / "a", _records(200, rng=rng),
+             RunMetadata(loaded=True, samples_per_period=50, n_periods=4))
+    save_run(tmp_path / "b", _records(150, rng=rng),
+             RunMetadata(loaded=True, samples_per_period=50, n_periods=3))
+    with pytest.raises(ValueError, match="different lengths"):
+        concatenate_runs([tmp_path / "a", tmp_path / "b"])
+
+    save_run(tmp_path / "c", _records(200, rng=rng),
+             RunMetadata(loaded=False, samples_per_period=50, n_periods=4))
+    with pytest.raises(ValueError, match="loaded and bare"):
+        concatenate_runs([tmp_path / "a", tmp_path / "c"])
+
+
+def test_single_block_still_works(tmp_path, rng):
+    from franka_payload_id.pipeline import concatenate_runs
+
+    save_run(tmp_path / "solo", _records(200, rng=rng),
+             RunMetadata(loaded=True, samples_per_period=50, n_periods=4))
+    merged = concatenate_runs([tmp_path / "solo"])
+    assert merged.n_samples == 200
+    assert merged.meta.n_blocks == 1
+
+
 def test_pair_compatibility_checks(rng):
     values = _records(100, rng=rng)
     loaded = RunLog(values, RunMetadata(loaded=True, samples_per_period=50))

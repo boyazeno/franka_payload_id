@@ -165,12 +165,24 @@ def cmd_ident_run(args) -> int:
     from .pipeline import PairPaths, identify
 
     pm, cfg = _load(args)
-    static_pair = PairPaths(Path(args.static_loaded), Path(args.static_bare)) \
-        if args.static_loaded else None
-    dynamic_pair = PairPaths(Path(args.dynamic_loaded), Path(args.dynamic_bare)) \
-        if args.dynamic_loaded else None
-    validation_pair = PairPaths(Path(args.validation_loaded), Path(args.validation_bare)) \
-        if args.validation_loaded else None
+
+    def blocks(value: str | None) -> list[Path] | None:
+        """Comma-separated list of run stems, one per collection block."""
+        if not value:
+            return None
+        return [Path(v.strip()) for v in value.split(",") if v.strip()]
+
+    def pair(loaded: str | None, bare: str | None, name: str) -> PairPaths | None:
+        lo, ba = blocks(loaded), blocks(bare)
+        if lo is None and ba is None:
+            return None
+        if lo is None or ba is None:
+            raise SystemExit(f"error: --{name}-loaded and --{name}-bare must both be given")
+        return PairPaths(lo, ba)
+
+    static_pair = pair(args.static_loaded, args.static_bare, "static")
+    dynamic_pair = pair(args.dynamic_loaded, args.dynamic_bare, "dynamic")
+    validation_pair = pair(args.validation_loaded, args.validation_bare, "validation")
 
     if static_pair is None and dynamic_pair is None:
         print("error: supply at least one of --static-loaded/--static-bare or "
@@ -321,12 +333,14 @@ def build_parser() -> argparse.ArgumentParser:
         dest="sub", required=True)
 
     ir = ident.add_parser("run", help="identify from collected logs")
-    ir.add_argument("--static-loaded")
-    ir.add_argument("--static-bare")
-    ir.add_argument("--dynamic-loaded")
-    ir.add_argument("--dynamic-bare")
-    ir.add_argument("--validation-loaded")
-    ir.add_argument("--validation-bare")
+    _blocks_help = ("run stem, or a comma-separated list of stems -- one per collection "
+                    "block of the ABBA schedule")
+    ir.add_argument("--static-loaded", help=_blocks_help)
+    ir.add_argument("--static-bare", help=_blocks_help)
+    ir.add_argument("--dynamic-loaded", help=_blocks_help)
+    ir.add_argument("--dynamic-bare", help=_blocks_help)
+    ir.add_argument("--validation-loaded", help=_blocks_help)
+    ir.add_argument("--validation-bare", help=_blocks_help)
     ir.add_argument("--out")
     ir.add_argument("--no-quality-gate", action="store_true")
     ir.set_defaults(func=cmd_ident_run)

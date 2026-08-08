@@ -47,38 +47,61 @@ robot fpi_run_trajectory --ip "$IP" --traj /data/raw/excite.csv \
       --out /data/raw/dryrun --loaded --dry-run 0.2
 pause "Dry run complete. Motion looked safe?"
 
-# Interleaving matters: alternating which configuration goes first in each block makes
-# the two runs' mean collection times equal, so linear thermal drift cancels exactly.
+# -----------------------------------------------------------------------------------
+# The dynamic stage is collected in four blocks ordered L B B L (ABBA).
+#
+# Thermal drift is a function of wall-clock time, so the difference of torques inherits
+# k * (mean loaded time - mean bare time). ABBA makes that difference exactly zero --
+# and it stays zero even though the tool swaps take minutes, because the two swaps sit
+# symmetrically about the middle. `L B L B` does NOT cancel: it leaves the bare blocks
+# one slot later on average, i.e. a constant offset on every sample. Neither does
+# `L L B B`, which is worst of all.
+#
+# Note only two tool swaps are needed, not three: the middle B B pair is contiguous.
 # See docs/THEORY.md section 4.1.
-echo "=== 3. static sweep, block A (tool attached) ==="
-robot fpi_static_poses --ip "$IP" --poses /data/raw/poses.csv \
-      --out /data/raw/static_loaded --loaded
+#
+# The static stage is collected as a single pair. Its signal (the ~0.4 Nm gravity
+# torque) is roughly fifty times the drift residual, so the ordering does not matter
+# there; it matters enormously for the dynamic stage, whose inertia signature is
+# ~0.008 Nm.
+# -----------------------------------------------------------------------------------
 
-pause "REMOVE the tool."
-echo "=== 3b. static sweep, block B (bare) ==="
+echo "=== 3. dynamic block 1 of 4: LOADED ==="
+robot fpi_run_trajectory --ip "$IP" --traj /data/raw/excite.csv \
+      --out /data/raw/dyn_loaded_1 --loaded
+
+pause "REMOVE the tool.  (swap 1 of 2)"
+
+echo "=== 4. dynamic block 2 of 4: BARE ==="
+robot fpi_run_trajectory --ip "$IP" --traj /data/raw/excite.csv \
+      --out /data/raw/dyn_bare_1 --bare
+
+echo "=== 5. dynamic block 3 of 4: BARE (no swap -- this is the B B pair) ==="
+robot fpi_run_trajectory --ip "$IP" --traj /data/raw/excite.csv \
+      --out /data/raw/dyn_bare_2 --bare
+
+echo "=== 5b. static sweep, bare (tool is already off) ==="
 robot fpi_static_poses --ip "$IP" --poses /data/raw/poses.csv \
       --out /data/raw/static_bare --bare
 
-echo "=== 4. dynamic run, bare first this time (alternating order) ==="
-robot fpi_run_trajectory --ip "$IP" --traj /data/raw/excite.csv \
-      --out /data/raw/dyn_bare --bare
+pause "ATTACH the tool.  (swap 2 of 2)"
 
-pause "ATTACH the tool again."
+echo "=== 6. dynamic block 4 of 4: LOADED ==="
 robot fpi_run_trajectory --ip "$IP" --traj /data/raw/excite.csv \
-      --out /data/raw/dyn_loaded --loaded
+      --out /data/raw/dyn_loaded_2 --loaded
 
-echo "=== 5. validation trajectory (held out) ==="
-robot fpi_run_trajectory --ip "$IP" --traj /data/raw/excite.csv \
-      --out /data/raw/val_loaded --loaded
-pause "REMOVE the tool."
-robot fpi_run_trajectory --ip "$IP" --traj /data/raw/excite.csv \
-      --out /data/raw/val_bare --bare
+echo "=== 6b. static sweep, loaded ==="
+robot fpi_static_poses --ip "$IP" --poses /data/raw/poses.csv \
+      --out /data/raw/static_loaded --loaded
 
-echo "=== 6. identification ==="
+echo "=== 7. identification ==="
+# The two blocks per configuration are passed as a comma-separated list; the pipeline
+# concatenates them and drops the settling period from EACH block, which is what keeps
+# the ABBA balance intact.
 fpi ident run \
   --static-loaded  "$RAW/static_loaded"  --static-bare  "$RAW/static_bare" \
-  --dynamic-loaded "$RAW/dyn_loaded"     --dynamic-bare "$RAW/dyn_bare" \
-  --validation-loaded "$RAW/val_loaded"  --validation-bare "$RAW/val_bare" \
+  --dynamic-loaded "$RAW/dyn_loaded_1,$RAW/dyn_loaded_2" \
+  --dynamic-bare   "$RAW/dyn_bare_1,$RAW/dyn_bare_2" \
   --out "$RESULTS"
 
 echo

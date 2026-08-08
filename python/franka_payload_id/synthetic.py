@@ -14,7 +14,8 @@ Modelled effects, all switchable from ``config/experiment.yaml``:
   the inertia terms can be recovered;
 * additive torque-sensor noise, per joint (joints 5-7 are quieter, being 12 Nm-rated);
 * encoder quantisation noise on the logged positions;
-* a slow thermal bias drift, which cancels only if loaded and bare runs are interleaved.
+* a slow thermal bias drift, which cancels only when the collection blocks are
+  ordered ABBA (`L B B L`) -- see :func:`block_schedule` and :func:`drift_imbalance`.
 """
 
 from __future__ import annotations
@@ -105,53 +106,126 @@ def _records(t: np.ndarray, q: np.ndarray, qd: np.ndarray, qdd: np.ndarray,
         success_rate=np.full(k, 1.0), robot_mode=np.full(k, 2.0), errors=np.zeros(k))
 
 
+def block_schedule(n_blocks: int, mode: str = "abba") -> list[bool]:
+    """Order in which the two configurations are collected. ``True`` means loaded.
+
+    A *block* is a contiguous run of several periods in one configuration. Blocks --
+    not individual periods -- are the physical unit here, because changing
+    configuration means unbolting the tool, which takes minutes.
+
+    ``abba``
+        ``L B B L`` repeated. The mean collection time of the loaded blocks equals that
+        of the bare blocks, so a linear thermal drift cancels exactly (see
+        :func:`drift_imbalance`). Requires ``n_blocks`` to be a multiple of 4.
+    ``alternating``
+        ``L B L B``. Intuitive, and wrong: it leaves the bare blocks one slot later on
+        average, i.e. a constant offset on every sample of the difference.
+    ``sequential``
+        ``L L B B`` -- all of one, then all of the other. The worst case, with an offset
+        of half the whole campaign.
+    """
+    if n_blocks % 2:
+        raise ValueError("n_blocks must be even so each configuration gets the same count")
+
+    if mode == "abba":
+        if n_blocks % 4:
+            raise ValueError("the abba schedule needs n_blocks to be a multiple of 4")
+        pattern = [True, False, False, True]
+        return [pattern[i % 4] for i in range(n_blocks)]
+    if mode == "alternating":
+        return [i % 2 == 0 for i in range(n_blocks)]
+    if mode == "sequential":
+        return [i < n_blocks // 2 for i in range(n_blocks)]
+    raise ValueError(f"unknown schedule {mode!r}")
+
+
+def block_start_times(schedule: list[bool], block_seconds: float,
+                      swap_seconds: float) -> np.ndarray:
+    """Wall-clock start time of each block, including the tool swaps between them.
+
+    A swap is only needed where the configuration actually changes -- which is why the
+    ``B B`` pair in the middle of an ABBA group costs nothing.
+    """
+    starts = np.empty(len(schedule), dtype=float)
+    clock = 0.0
+    for i, loaded in enumerate(schedule):
+        if i > 0 and schedule[i - 1] != loaded:
+            clock += swap_seconds
+        starts[i] = clock
+        clock += block_seconds
+    return starts
+
+
+def drift_imbalance(schedule: list[bool], block_seconds: float,
+                    swap_seconds: float) -> float:
+    r"""Mean loaded collection time minus mean bare collection time [s].
+
+    This single number is what a linear thermal drift multiplies to produce a constant
+    bias on every sample of :math:`\Delta\tau`. Zero means the drift cancels exactly.
+    ABBA gives zero **even when the swaps take time**, provided the two swaps take
+    similar time -- which is the practical reason to prefer it.
+    """
+    starts = block_start_times(schedule, block_seconds, swap_seconds)
+    centres = starts + 0.5 * block_seconds
+    loaded = np.array([c for c, is_loaded in zip(centres, schedule) if is_loaded])
+    bare = np.array([c for c, is_loaded in zip(centres, schedule) if not is_loaded])
+    return float(loaded.mean() - bare.mean())
+
+
 def wall_clock_times(t: np.ndarray, period: float, n_periods: int, *,
-                     loaded: bool, interleave: bool) -> np.ndarray:
-    r"""Map in-run sample times to the wall-clock times at which they were collected.
+                     loaded: bool, schedule: list[bool],
+                     swap_seconds: float = 0.0) -> np.ndarray:
+    """Map in-run sample times to the wall-clock times at which they were collected.
 
     Thermal drift is a function of wall-clock time, so what matters is *when* each
-    period of each configuration was actually recorded.
-
-    ``interleave=True`` models the recommended protocol: the two configurations are
-    collected period by period, **alternating which one goes first in each pair**
-    (L B, B L, L B, ...). Over an even number of periods the mean collection time of
-    the loaded samples then equals that of the bare samples, so a linear drift cancels
-    *exactly* in the difference.
-
-    Naive alternation that always puts the same configuration first (L B, L B, ...)
-    does **not** cancel: it leaves the bare run one slot later on average, i.e. a
-    constant offset on every sample of the difference. That residual is comparable to
-    a small tool's entire inertia signature, so the swap ordering is not a detail.
-
-    ``interleave=False`` models "all loaded, then all bare", where the offset is the
-    whole run duration.
+    period of each configuration was actually recorded. ``t`` runs from 0 to
+    ``n_periods * period`` within one configuration's concatenated log; this spreads
+    those periods across that configuration's blocks in the schedule.
     """
     t = np.asarray(t, dtype=float)
-    if not interleave:
-        return t if loaded else t + period * n_periods
+    my_blocks = [i for i, is_loaded in enumerate(schedule) if is_loaded == loaded]
+    if not my_blocks:
+        raise ValueError("the schedule contains no blocks for this configuration")
+    if n_periods % len(my_blocks):
+        raise ValueError(
+            f"{n_periods} periods do not divide evenly into {len(my_blocks)} blocks")
+
+    per_block = n_periods // len(my_blocks)
+    block_seconds = per_block * period
+    starts = block_start_times(schedule, block_seconds, swap_seconds)
 
     index = np.clip((t // period).astype(int), 0, max(n_periods - 1, 0))
-    within = t - index * period
-    # Two slots per period; swap which configuration occupies the first slot.
-    first_is_loaded = (index % 2 == 0)
-    takes_first = first_is_loaded if loaded else ~first_is_loaded
-    return 2.0 * index * period + np.where(takes_first, 0.0, period) + within
+    within_period = t - index * period
+    block_of_period = index // per_block
+    offset_in_block = (index % per_block) * period
+
+    block_start = starts[np.asarray(my_blocks)[block_of_period]]
+    return block_start + offset_in_block + within_period
 
 
 def simulate_dynamic_pair(pm: PandaModel, traj: FourierTrajectory, phi_payload: np.ndarray,
                           *, noise: NoiseModel, n_periods: int = 10,
                           sample_rate_hz: float = 1000.0,
                           seed: int = 0,
-                          interleave: bool = True) -> tuple[RunLog, RunLog]:
+                          schedule: str = "abba",
+                          n_blocks: int = 4,
+                          swap_seconds: float = 180.0) -> tuple[RunLog, RunLog]:
     """A (loaded, bare) run pair on the same commanded trajectory.
 
-    See :func:`wall_clock_times` for what ``interleave`` models and why it matters.
+    ``n_periods`` is the total per configuration; it is split across that
+    configuration's blocks in the schedule. ``swap_seconds`` is how long changing the
+    tool takes -- three minutes by default, which is realistic and, with ABBA, harmless.
+
+    See :func:`block_schedule` and :func:`drift_imbalance` for why the ordering matters.
     """
     rng = np.random.default_rng(seed)
     t, q, qd, qdd = traj.sample(sample_rate_hz, n_periods)
 
-    t_loaded = wall_clock_times(t, traj.period, n_periods, loaded=True, interleave=interleave)
-    t_bare = wall_clock_times(t, traj.period, n_periods, loaded=False, interleave=interleave)
+    order = block_schedule(n_blocks, schedule)
+    t_loaded = wall_clock_times(t, traj.period, n_periods, loaded=True,
+                                schedule=order, swap_seconds=swap_seconds)
+    t_bare = wall_clock_times(t, traj.period, n_periods, loaded=False,
+                              schedule=order, swap_seconds=swap_seconds)
 
     tau_loaded = simulate_torque(pm, q, qd, qdd, phi_payload=phi_payload, noise=noise,
                                  rng=rng, t=t_loaded)
@@ -165,7 +239,9 @@ def simulate_dynamic_pair(pm: PandaModel, traj: FourierTrajectory, phi_payload: 
             run_id=f"synthetic_{'loaded' if loaded else 'bare'}", kind="trajectory",
             loaded=loaded, robot_ip="synthetic", libfranka_version="synthetic",
             sample_rate_hz=sample_rate_hz, samples_per_period=spp, n_periods=n_periods,
-            trajectory=traj.to_dict(), notes="generated by franka_payload_id.synthetic")
+            n_blocks=sum(1 for x in order if x == loaded),
+            trajectory=traj.to_dict(),
+            notes=f"generated by franka_payload_id.synthetic; schedule={schedule}")
 
     loaded_log = RunLog(_records(t, q, qd, qdd, tau_loaded, rng,
                                  noise.encoder_noise_rad, pm), meta(True))

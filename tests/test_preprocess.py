@@ -175,6 +175,31 @@ def test_combine_approaches_passes_through_unpaired_rows():
     np.testing.assert_allclose(tau_c, tau)
 
 
+def test_settling_period_is_dropped_from_every_block():
+    """Dropping it only once would unbalance the ABBA drift cancellation."""
+    from franka_payload_id.data.preprocess import build_dynamic_dataset
+
+    spp, per_block, blocks = 100, 4, 2
+    total = spp * per_block * blocks
+    # A ramp in q makes it obvious which samples survived.
+    q = np.tile(np.arange(total, dtype=float)[:, None], (1, 7)) * 1e-6
+    tau = np.zeros((total, 7))
+
+    ds = build_dynamic_dataset(q, tau, q, tau, sample_rate_hz=1000.0,
+                               samples_per_period=spp, cutoff_hz=50.0,
+                               decimate_to_hz=1000.0, drop_first_period=True,
+                               edge_trim_s=0.0, zero_velocity_threshold=0.0,
+                               n_blocks=blocks)
+    # 2 blocks x (4 - 1) periods survive, averaged over the 3 remaining periods.
+    assert ds.n_samples == spp
+
+    with pytest.raises(ValueError, match="do not divide evenly"):
+        build_dynamic_dataset(q, tau, q, tau, sample_rate_hz=1000.0,
+                              samples_per_period=spp, cutoff_hz=50.0,
+                              decimate_to_hz=1000.0, drop_first_period=True,
+                              edge_trim_s=0.0, n_blocks=3)
+
+
 def test_combine_approaches_validates_shapes():
     with pytest.raises(ValueError, match="same number of rows"):
         combine_approaches(np.zeros((2, 7)), np.zeros((3, 7)), np.array([1, -1]))

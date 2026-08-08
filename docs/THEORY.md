@@ -159,22 +159,51 @@ model error of ~0.5–2 N·m RMS, which is larger than the entire gravity torque
 tool. That is why the difference method is the primary estimator here and the model-based
 one appears only as a cross-check.
 
-### 4.1 Why the interleaving order matters
+### 4.1 Why the collection order matters
 
-Thermal drift is a function of wall-clock time. If the loaded run is collected entirely
-before the bare run, the difference inherits a bias proportional to the whole run
-duration.
+Thermal drift is a function of wall-clock time, so a sample collected at time $t$ carries
+a bias $k t$ and the difference inherits
 
-Interleaving period by period helps, but **only if the order alternates**. Collecting
-`L B, L B, L B, …` leaves the bare samples one slot later *on average*, i.e. a constant
-offset on every sample of $\Delta\tau$. Alternating which configuration goes first,
+$$ \Delta\tau_{\text{drift}} = k\,(t_L - t_B) $$
 
-$$ \texttt{L B,\; B L,\; L B,\; B L,\; \ldots} $$
+**Blocks, not periods, are the physical unit.** Changing configuration means unbolting
+the tool, which takes minutes, so a campaign is a handful of multi-period *blocks*. Let
+$T_b$ be the block duration and $S$ the swap time. Writing $\bar t_L, \bar t_B$ for the
+mean collection times, the quantity that must vanish is the **drift imbalance**
+$\bar t_L - \bar t_B$:
 
-makes the mean collection time of the two configurations equal, so a linear drift cancels
-**exactly**. `wall_clock_times` models both orderings and
-`test_interleaving_cancels_thermal_drift` shows the difference: with alternation the
-inertia error stays under 50 %, without it exceeds 300 % of that.
+| order | imbalance | with $T_b=50$ s, $S=180$ s |
+|---|---|---|
+| `L L B B` (all of one, then the other) | $-(T_b + S)\cdot\frac{n}{2}$-ish | $-280$ s |
+| `L B L B` (naive alternation) | $-(T_b + S)$ | $-230$ s |
+| **`L B B L` (ABBA)** | $0$ | **$0$ s** |
+
+The ABBA result is exact, and — importantly for practice — **it stays exact even though
+the swaps take minutes**, because the two swaps sit symmetrically about the middle of the
+campaign. ABBA also needs only *two* tool changes rather than three, since the middle
+`B B` pair is contiguous.
+
+`block_schedule`, `block_start_times` and `drift_imbalance` implement and expose this;
+`test_block_schedules_have_the_expected_drift_imbalance` checks the arithmetic and
+`test_abba_scheduling_cancels_thermal_drift` checks the end-to-end consequence.
+
+**A subtlety worth stating, because it silently undoes the above.** Under ABBA the drift
+residual is not constant across the run: it is $-k(T_b + S)$ while the loaded block
+precedes the bare one and $+k(T_b + S)$ while it follows — a square wave whose *mean* is
+zero. Period averaging therefore removes it completely, **but only if every block
+contributes the same number of periods**. Discarding the settling period from the
+concatenated log alone would take it from one block only, leaving
+
+$$ \text{residual} \sim \frac{k(T_b+S)}{n_{\text{periods}}} $$
+
+which is small but not zero. `build_dynamic_dataset` therefore drops the settling period
+from *each* block (`n_blocks`), and `test_settling_period_is_dropped_from_every_block`
+pins it.
+
+**The static stage does not need this.** Its signal is the ~0.4 N·m gravity torque,
+roughly fifty times the drift residual, so a single loaded/bare pair is fine there. The
+dynamic stage, whose inertia signature is ~0.008 N·m, is where the ordering decides the
+answer.
 
 ---
 
@@ -538,7 +567,11 @@ is entirely adequate — and is what the pipeline does automatically, saying so 
 | 7.1 | analytic constraint gradient | `traj/constraints.py::half_space_jacobian` | `test_half_space_jacobian_matches_finite_differences` |
 | 7.1 | export safety gate | `traj/export.py::export_trajectory` | `test_export_refuses_placeholder_workspace` |
 | 4 | difference of torques | `data/preprocess.py::build_dynamic_dataset` | `test_dynamic_recovers_exactly_without_noise` |
-| 4.1 | interleaving / thermal drift | `synthetic.py::wall_clock_times` | `test_interleaving_cancels_thermal_drift` |
+| 4.1 | ABBA block schedule | `synthetic.py::block_schedule`, `block_start_times` | `test_block_schedules_have_the_expected_drift_imbalance` |
+| 4.1 | drift imbalance | `synthetic.py::drift_imbalance` | as above |
+| 4.1 | end-to-end drift cancellation | `synthetic.py::wall_clock_times` | `test_abba_scheduling_cancels_thermal_drift` |
+| 4.1 | per-block settling drop | `data/preprocess.py::build_dynamic_dataset` (`n_blocks`) | `test_settling_period_is_dropped_from_every_block` |
+| 4.1 | block concatenation | `pipeline.py::concatenate_runs` | `test_concatenate_blocks` |
 | 8 | pseudo-inertia $J(\phi)$ | `model/params.py::pseudo_inertia`, `pseudo_inertia_basis` | `test_pseudo_inertia_definition`, `test_pseudo_inertia_basis_reconstructs` |
 | 8 | physical consistency | `model/params.py::is_physically_consistent`, `consistency_report` | `test_physical_consistency_detects_violations` |
 | 8 | bounding-ellipsoid LMI | `model/params.py::bounding_ellipsoid_matrix` | `test_bounding_ellipsoid_constraint_holds_for_contained_mass` |

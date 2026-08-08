@@ -32,8 +32,59 @@ from .report import IdentificationReport
 
 @dataclass
 class PairPaths:
-    loaded: Path
-    bare: Path
+    """One or more collection blocks per configuration.
+
+    Under the ABBA schedule each configuration is collected in several separate blocks
+    (`L B B L`), so both sides are lists. They are concatenated in the order given, and
+    the settling period is dropped from each block rather than only from the first --
+    dropping it once would leave the blocks unequal and reintroduce the very drift
+    imbalance ABBA exists to remove.
+    """
+
+    loaded: Path | list[Path]
+    bare: Path | list[Path]
+
+    @staticmethod
+    def _as_list(value: Path | list[Path]) -> list[Path]:
+        return [Path(value)] if isinstance(value, (str, Path)) else [Path(v) for v in value]
+
+    @property
+    def loaded_blocks(self) -> list[Path]:
+        return self._as_list(self.loaded)
+
+    @property
+    def bare_blocks(self) -> list[Path]:
+        return self._as_list(self.bare)
+
+
+def concatenate_runs(paths: list[Path]) -> RunLog:
+    """Load several blocks of one configuration and concatenate them into one log."""
+    runs = [load_run(p) for p in paths]
+    if len(runs) == 1:
+        run = runs[0]
+        run.meta.n_blocks = max(int(run.meta.n_blocks or 1), 1)
+        return run
+
+    first = runs[0].meta
+    for other in runs[1:]:
+        if other.meta.loaded != first.loaded:
+            raise ValueError("cannot concatenate loaded and bare blocks into one log")
+        if other.meta.samples_per_period != first.samples_per_period:
+            raise ValueError("blocks have different period lengths")
+        if abs(other.meta.sample_rate_hz - first.sample_rate_hz) > 1e-9:
+            raise ValueError("blocks were recorded at different sample rates")
+
+    lengths = {r.n_samples for r in runs}
+    if len(lengths) != 1:
+        raise ValueError(
+            f"blocks have different lengths {sorted(lengths)}; the ABBA cancellation "
+            "requires every block to contribute the same number of periods")
+
+    meta = runs[0].meta
+    meta.n_blocks = len(runs)
+    meta.n_periods = sum(r.meta.n_periods for r in runs)
+    meta.run_id = "+".join(p.name for p in paths)
+    return RunLog(np.vstack([r.values for r in runs]), meta)
 
 
 def _prior(cfg: Config, mass_hint: float | None = None) -> InertialParams:
@@ -102,6 +153,7 @@ def dynamic_dataset_from_runs(loaded: RunLog, bare: RunLog, cfg: Config) -> Dyna
         drop_first_period=bool(pp["drop_first_period"]),
         edge_trim_s=float(pp["edge_trim_s"]),
         zero_velocity_threshold=float(pp["zero_velocity_threshold"]),
+        n_blocks=int(getattr(loaded.meta, "n_blocks", 1) or 1),
     )
 
 
@@ -158,14 +210,16 @@ def identify(pm: PandaModel, cfg: Config, *,
     friction = None
 
     def _load(pair: PairPaths) -> tuple[RunLog, RunLog]:
-        loaded, bare = load_run(pair.loaded), load_run(pair.bare)
         if quality_gate:
-            for name, run in (("loaded", loaded), ("bare", bare)):
-                report = assess_run(run)
-                if not report.ok:
-                    raise ValueError(f"{name} run {pair.loaded} failed quality gating:\n"
-                                     f"{report.summary()}")
-        return loaded, bare
+            # Gate each block individually: a single bad block should be identifiable,
+            # and its problems would be diluted by concatenation.
+            for label, blocks in (("loaded", pair.loaded_blocks), ("bare", pair.bare_blocks)):
+                for path in blocks:
+                    report = assess_run(load_run(path))
+                    if not report.ok:
+                        raise ValueError(
+                            f"{label} block {path} failed quality gating:\n{report.summary()}")
+        return concatenate_runs(pair.loaded_blocks), concatenate_runs(pair.bare_blocks)
 
     if static_pair is not None:
         loaded, bare = _load(static_pair)

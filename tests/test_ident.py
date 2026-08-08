@@ -6,8 +6,8 @@ executable documentation:
 * the two Stage-B estimators (SDP and log-Cholesky) must agree -- they share no solver,
   so agreement is strong evidence neither has a formulation bug;
 * the bidirectional static protocol must actually remove stiction;
-* interleaving the loaded and bare runs must actually cancel thermal drift, and the
-  naive "all loaded then all bare" ordering must visibly fail.
+* the ABBA block ordering must actually cancel thermal drift, and both the naive
+  `L B L B` alternation and `L L B B` must visibly fail.
 """
 
 from __future__ import annotations
@@ -50,10 +50,10 @@ def truth(cfg) -> np.ndarray:
     return reference_tool_phi(cfg)
 
 
-def _dataset(panda, cfg, traj, truth, *, noise, seed=0, n_periods=8, interleave=True):
+def _dataset(panda, cfg, traj, truth, *, noise, seed=0, n_periods=8, schedule="abba"):
     loaded, bare = simulate_dynamic_pair(panda, traj, truth, noise=noise,
                                          n_periods=n_periods, seed=seed,
-                                         interleave=interleave)
+                                         schedule=schedule)
     pp = cfg.experiment.preprocess
     return build_dynamic_dataset(
         loaded.q, loaded.tau_J, bare.q, bare.tau_J, sample_rate_hz=1000.0,
@@ -61,7 +61,8 @@ def _dataset(panda, cfg, traj, truth, *, noise, seed=0, n_periods=8, interleave=
         cutoff_hz=float(pp["cutoff_hz"]), filter_order=int(pp["filter_order"]),
         decimate_to_hz=float(pp["decimate_to_hz"]), drop_first_period=True,
         edge_trim_s=float(pp["edge_trim_s"]),
-        zero_velocity_threshold=float(pp["zero_velocity_threshold"]))
+        zero_velocity_threshold=float(pp["zero_velocity_threshold"]),
+        n_blocks=loaded.meta.n_blocks)
 
 
 # ---------------------------------------------------------------- Stage A
@@ -131,7 +132,7 @@ def test_static_dataset_rejects_mismatched_poses(panda):
 
 # ---------------------------------------------------------------- Stage B
 def test_dynamic_recovers_exactly_without_noise(panda, cfg, traj, truth):
-    dataset = _dataset(panda, cfg, traj, truth, noise=NoiseModel.noiseless(), n_periods=3)
+    dataset = _dataset(panda, cfg, traj, truth, noise=NoiseModel.noiseless(), n_periods=4)
     prior = bounding_box_prior(cfg.tool.mass_scale, cfg.tool.bbox_min, cfg.tool.bbox_max)
     result = identify_dynamic_sdp(panda, dataset, prior=prior, gamma=0.0,
                                   use_entropic_prior=False, _measure_prior_shift=False)
@@ -193,35 +194,70 @@ def test_cross_validation_scores_a_held_out_trajectory(panda, cfg, traj, truth):
 
 
 # ---------------------------------------------------------------- protocol
-def test_interleaving_cancels_thermal_drift(panda, cfg, traj, truth):
-    """The protocol detail that matters most, demonstrated.
+def test_block_schedules_have_the_expected_drift_imbalance():
+    """The ordering argument, at the level of arithmetic rather than estimation.
 
-    Alternating which configuration is collected first in each period makes the mean
-    collection time of the two runs equal, so a linear thermal drift cancels in the
-    difference. Collecting all of one and then all of the other leaves a constant
-    offset on every sample -- comparable to a small tool's whole inertia signature.
+    ``drift_imbalance`` is the mean loaded collection time minus the mean bare one; a
+    linear thermal drift multiplies it to give a constant bias on every sample of the
+    torque difference. ABBA drives it to exactly zero, and does so *even when the tool
+    swaps take time* -- which is what makes it usable in practice.
+    """
+    from franka_payload_id.synthetic import block_schedule, drift_imbalance
+
+    block_seconds, swap_seconds = 50.0, 180.0
+
+    assert "".join("L" if x else "B" for x in block_schedule(4, "abba")) == "LBBL"
+    assert "".join("L" if x else "B" for x in block_schedule(4, "alternating")) == "LBLB"
+    assert "".join("L" if x else "B" for x in block_schedule(4, "sequential")) == "LLBB"
+
+    assert drift_imbalance(block_schedule(4, "abba"), block_seconds, swap_seconds) == \
+        pytest.approx(0.0, abs=1e-9)
+    assert drift_imbalance(block_schedule(8, "abba"), block_seconds, swap_seconds) == \
+        pytest.approx(0.0, abs=1e-9)
+    # Both alternatives leave a residual of order the campaign length.
+    assert abs(drift_imbalance(block_schedule(4, "alternating"),
+                               block_seconds, swap_seconds)) > 100.0
+    assert abs(drift_imbalance(block_schedule(4, "sequential"),
+                               block_seconds, swap_seconds)) > 100.0
+
+    with pytest.raises(ValueError, match="multiple of 4"):
+        block_schedule(6, "abba")
+    with pytest.raises(ValueError, match="must be even"):
+        block_schedule(3, "alternating")
+
+
+def test_abba_scheduling_cancels_thermal_drift(panda, cfg, traj, truth):
+    """The protocol detail that matters most, demonstrated end to end.
+
+    Blocks -- not individual periods -- are the physical unit, because changing
+    configuration means unbolting the tool. Ordering the blocks ``L B B L`` equalises
+    the two configurations' mean collection times, so a linear thermal drift cancels.
+    ``L B L B`` and ``L L B B`` both leave a constant offset on every sample of the
+    difference, comparable to a small tool's whole inertia signature.
     """
     noise = NoiseModel.from_config(cfg.experiment.synthetic)
     prior = bounding_box_prior(cfg.tool.mass_scale, cfg.tool.bbox_min, cfg.tool.bbox_max)
     _, _, inertia_true = phi_to_mci(truth)
 
-    def inertia_error(interleave: bool) -> float:
-        dataset = _dataset(panda, cfg, traj, truth, noise=noise, seed=7,
-                           interleave=interleave)
+    def inertia_error(schedule: str) -> float:
+        dataset = _dataset(panda, cfg, traj, truth, noise=noise, seed=7, schedule=schedule)
         result = identify_dynamic_sdp(panda, dataset, prior=prior, gamma=1e-2,
                                       _measure_prior_shift=False)
         _, _, inertia = phi_to_mci(result.phi)
         return float(np.abs(np.diag(inertia) - np.diag(inertia_true)).max()
                      / np.diag(inertia_true).max())
 
-    good = inertia_error(True)
-    bad = inertia_error(False)
-    assert good < 0.5
-    assert bad > 3.0 * good
+    abba = inertia_error("abba")
+    alternating = inertia_error("alternating")
+    sequential = inertia_error("sequential")
+
+    assert abba < 0.5
+    assert alternating > 3.0 * abba
+    assert sequential > 3.0 * abba
 
 
 def test_zero_velocity_rows_are_masked(panda, cfg, traj, truth):
-    dataset = _dataset(panda, cfg, traj, truth, noise=NoiseModel.noiseless(), n_periods=3)
+    dataset = _dataset(panda, cfg, traj, truth, noise=NoiseModel.noiseless(), n_periods=4)
     threshold = float(cfg.experiment.preprocess["zero_velocity_threshold"])
     assert np.all(np.abs(dataset.qd[dataset.mask]) >= threshold)
     assert dataset.mask.mean() < 1.0     # something really was dropped

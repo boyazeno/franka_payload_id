@@ -90,9 +90,10 @@ def _write_static_pair(directory: Path, pm: PandaModel, poses: np.ndarray,
 
 def _write_dynamic_pair(directory: Path, pm: PandaModel, traj: FourierTrajectory,
                         phi_true: np.ndarray, noise: NoiseModel, n_periods: int,
-                        seed: int, prefix: str) -> PairPaths:
+                        seed: int, prefix: str, schedule: str = "abba") -> PairPaths:
     loaded, bare = simulate_dynamic_pair(pm, traj, phi_true, noise=noise,
-                                         n_periods=n_periods, seed=seed)
+                                         n_periods=n_periods, seed=seed,
+                                         schedule=schedule)
     out = []
     for run, name in ((loaded, f"{prefix}_loaded"), (bare, f"{prefix}_bare")):
         run.meta.run_id = name
@@ -121,8 +122,11 @@ def run_synthetic_pipeline(pm: PandaModel, cfg: Config, *, seed: int = 0,
         static_pair = _write_static_pair(directory, pm, poses, phi_true, noise, seed)
         dynamic_pair = _write_dynamic_pair(directory, pm, traj, phi_true, noise,
                                            n_periods, seed + 1, "dynamic")
+        # Round down to an even count: each configuration's periods must divide
+        # evenly across its blocks in the schedule.
+        validation_periods = max((n_periods // 2) // 2 * 2, 2)
         validation_pair = _write_dynamic_pair(directory, pm, traj, phi_true, noise,
-                                              max(n_periods // 2, 2), seed + 2, "validation")
+                                              validation_periods, seed + 2, "validation")
 
         report = identify(pm, cfg, static_pair=static_pair, dynamic_pair=dynamic_pair,
                           validation_pair=validation_pair, quality_gate=False)

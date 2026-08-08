@@ -207,11 +207,22 @@ def build_dynamic_dataset(q_loaded: np.ndarray, tau_loaded: np.ndarray,
                           decimate_to_hz: float = 100.0,
                           drop_first_period: bool = True,
                           edge_trim_s: float = 0.5,
-                          zero_velocity_threshold: float = 0.05) -> DynamicDataset:
-    """Turn a paired (loaded, bare) run into a conditioned dataset.
+                          zero_velocity_threshold: float = 0.05,
+                          n_blocks: int = 1) -> DynamicDataset:
+    r"""Turn a paired (loaded, bare) run into a conditioned dataset.
 
     Both runs must have been recorded on the *same* commanded trajectory at the same
     rate; that is what makes the arm dynamics and load-independent friction cancel.
+
+    ``n_blocks`` is how many separate collection blocks each configuration's log is a
+    concatenation of. It matters because of an interaction that is easy to miss: under
+    the ABBA schedule the thermal-drift residual is a *square wave* over the periods --
+    negative while the loaded block precedes the bare one, positive while it follows --
+    whose mean is exactly zero. Period averaging then removes it completely, **but only
+    if every block contributes the same number of periods**. Dropping the first period
+    of the concatenated log alone would drop it from one block only, unbalancing the
+    design and leaving a residual of order (drift x block duration) / n_periods.
+    So the settling period is dropped from *each* block.
     """
     q_loaded = np.asarray(q_loaded, dtype=float)
     q_bare = np.asarray(q_bare, dtype=float)
@@ -225,9 +236,20 @@ def build_dynamic_dataset(q_loaded: np.ndarray, tau_loaded: np.ndarray,
     tau_loaded, tau_bare = tau_loaded[:n], tau_bare[:n]
 
     spp = int(samples_per_period)
-    if drop_first_period and n >= 2 * spp:
-        q_loaded, q_bare = q_loaded[spp:], q_bare[spp:]
-        tau_loaded, tau_bare = tau_loaded[spp:], tau_bare[spp:]
+    blocks = max(int(n_blocks), 1)
+    total_periods = n // spp
+    if drop_first_period and total_periods >= 2 * blocks:
+        if total_periods % blocks:
+            raise ValueError(
+                f"{total_periods} periods do not divide evenly into {blocks} blocks; "
+                "the ABBA drift cancellation requires equal-sized blocks")
+        per_block = total_periods // blocks
+        keep = np.concatenate([
+            np.arange(b * per_block * spp + spp, (b + 1) * per_block * spp)
+            for b in range(blocks)
+        ])
+        q_loaded, q_bare = q_loaded[keep], q_bare[keep]
+        tau_loaded, tau_bare = tau_loaded[keep], tau_bare[keep]
 
     # 1. Average over whole periods; the across-period spread gives the noise level.
     q_l_mean, _ = average_periods(q_loaded, spp)
