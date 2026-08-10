@@ -155,3 +155,25 @@ def test_desk_fields_are_column_major_about_com(tool_phi):
                                mat.flatten(order="F"), atol=1e-15)
     _, _, ic = P.phi_to_mci(tool_phi)
     np.testing.assert_allclose(mat, ic, atol=1e-15)
+
+
+def test_boundary_solutions_are_accepted():
+    """Degenerate but realizable bodies sit on the boundary of the consistent set.
+
+    A point mass, rod or flat plate has a rank-deficient pseudo-inertia. The
+    log-Cholesky parameterisation can land exactly there, and floating point then puts
+    the smallest eigenvalue at around -1e-17. Testing against absolute zero rejects a
+    parameter vector that is consistent by construction, so the tolerance is relative.
+    """
+    # A near point mass: J is rank 1 up to rounding.
+    point = P.phi_from_mci(0.5, np.array([0.0, 0.0, 0.08]), np.zeros((3, 3)))
+    assert P.is_physically_consistent(point)
+
+    # A flat plate: one principal moment is the sum of the other two.
+    plate = P.phi_from_mci(0.5, np.array([0.0, 0.0, 0.05]),
+                           np.diag([1e-3, 2e-3, 3e-3]))
+    assert P.is_physically_consistent(plate)
+
+    # A genuine violation is still rejected, by a wide margin.
+    bad = P.phi_from_mci(0.5, np.array([0.0, 0.0, 0.05]), np.diag([1e-4, 1e-4, 1.0]))
+    assert not P.is_physically_consistent(bad)

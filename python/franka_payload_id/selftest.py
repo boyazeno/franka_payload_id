@@ -76,9 +76,13 @@ def _write_static_pair(directory: Path, pm: PandaModel, poses: np.ndarray,
             dtau_J=np.zeros_like(tau_rep), tau_ext=np.zeros_like(tau_rep),
             o_t_ee=np.tile(np.eye(4).flatten(order="F"), (k, 1)),
             success_rate=np.zeros(k), robot_mode=np.full(k, 1.0), errors=np.zeros(k))
+        # Declare the payload truthfully, exactly as the collector does on hardware.
         meta = RunMetadata(run_id=name, kind="static", loaded=loaded,
                            robot_ip="synthetic", sample_rate_hz=1000.0,
                            samples_per_period=dwell, n_periods=n_rows,
+                           m_load=(float(phi_true[0]) if loaded else 0.0),
+                           F_x_Cload=([float(v) for v in phi_true[1:4] / phi_true[0]]
+                                      if loaded else [0.0, 0.0, 0.0]),
                            notes="synthetic static sweep")
         stem = directory / name
         save_run(stem, values, meta)

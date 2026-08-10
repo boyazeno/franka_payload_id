@@ -29,6 +29,20 @@ def _load(args) -> tuple[PandaModel, Config]:
 # ---------------------------------------------------------------------------
 # traj
 # ---------------------------------------------------------------------------
+def _payload_prior_phi(cfg):
+    """Rough payload for torque budgeting: the scale mass in a uniform-density box.
+
+    Only used to size the torque requirement, so a crude estimate is fine -- but
+    omitting it entirely is how a trajectory that is safe on the bare arm trips a
+    torque reflex once the tool is on.
+    """
+    from .model import bounding_box_prior
+    if cfg.tool.mass_scale is None:
+        return None
+    return bounding_box_prior(cfg.tool.mass_scale, cfg.tool.bbox_min,
+                              cfg.tool.bbox_max).to_phi()
+
+
 def cmd_traj_generate(args) -> int:
     from .traj.optimize import optimize_trajectory
 
@@ -45,7 +59,8 @@ def cmd_traj_generate(args) -> int:
         criterion=str(opt["objective"]),
         n_restarts=int(args.restarts or opt["n_restarts"]),
         max_iter=int(opt["max_iter"]),
-        seed=int(args.seed if args.seed is not None else opt["seed"]))
+        seed=int(args.seed if args.seed is not None else opt["seed"]),
+        payload_phi=_payload_prior_phi(cfg))
 
     print(f"condition number (column-scaled): {result.condition:.1f}")
     print(f"log det:                          {result.log_det:.2f}")
@@ -82,7 +97,7 @@ def cmd_traj_export(args) -> int:
             args.out, tr, pm, cfg.workspace, cfg.derated_limits(),
             sample_rate_hz=float(cfg.experiment.trajectory["sample_rate_hz"]),
             n_periods=int(args.periods or cfg.experiment.trajectory["n_periods"]),
-            force=args.force)
+            force=args.force, payload_phi=_payload_prior_phi(cfg))
     except UnsafeExportError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -97,7 +112,9 @@ def cmd_traj_check(args) -> int:
     pm, cfg = _load(args)
     source = Path(args.traj) if args.traj else asset_dir() / "excitation_reference.json"
     tr = FourierTrajectory.from_dict(json.loads(source.read_text(encoding="utf-8")))
-    report = check_trajectory(pm, cfg.workspace, cfg.derated_limits(), tr, n_samples=1000)
+    from .traj.constraints import make_torque_predictor
+    report = check_trajectory(pm, cfg.workspace, cfg.derated_limits(), tr, n_samples=1000,
+                              torque_fn=make_torque_predictor(pm, _payload_prior_phi(cfg)))
     print(report.summary())
     return 0 if report.ready_for_hardware else 1
 

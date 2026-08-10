@@ -248,3 +248,31 @@ def test_static_pose_set_waypoints_are_bidirectional():
 
     single = StaticPoseSet(poses, offset, bidirectional=False)
     assert len(single.waypoints()) == 3
+
+
+def test_torque_limit_is_enforced(panda, cfg, reference_traj):
+    """The torque budget must actually be checked -- it silently was not for a while.
+
+    ``check_trajectory`` only evaluates the torque constraint when a predictor is
+    supplied, and for a time nothing supplied one, so ``derate.torque`` in the config
+    was dead and the shipped trajectory exceeded it.
+    """
+    from franka_payload_id.model import bounding_box_prior
+    from franka_payload_id.traj.constraints import make_torque_predictor
+
+    payload = bounding_box_prior(cfg.tool.mass_scale, cfg.tool.bbox_min,
+                                 cfg.tool.bbox_max).to_phi()
+    predict = make_torque_predictor(panda, payload)
+    limits = cfg.derated_limits()
+
+    report = check_trajectory(panda, cfg.workspace, limits, reference_traj,
+                              n_samples=800, torque_fn=predict)
+    assert report.max_torque_ratio > 0.0, "torque was not evaluated at all"
+    assert report.ok, report.summary()
+    assert report.max_torque_ratio <= 1.0
+
+    # The predictor must account for the payload: it only ever raises the requirement.
+    bare = make_torque_predictor(panda, None)
+    t = np.linspace(0.0, reference_traj.period, 200, endpoint=False)
+    q, qd, qdd = reference_traj(t)
+    assert np.abs(predict(q, qd, qdd)).max() > np.abs(bare(q, qd, qdd)).max()

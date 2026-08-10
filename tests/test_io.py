@@ -110,15 +110,20 @@ def test_wrong_width_is_rejected(tmp_path):
 
 
 # ---------------------------------------------------------------- quality
+def _bare_meta(**kw) -> RunMetadata:
+    """A bare run declaring zero load: valid, so other gates can be tested alone."""
+    return RunMetadata(loaded=False, **kw)
+
+
 def test_good_run_passes(rng):
-    run = RunLog(_records(2000, rng=rng), RunMetadata())
+    run = RunLog(_records(2000, rng=rng), _bare_meta())
     assert assess_run(run).ok
 
 
 def test_low_success_rate_is_rejected(rng):
     values = _records(2000, rng=rng)
     values[500:600, SCHEMA.index("control_command_success_rate")] = 0.80
-    report = assess_run(RunLog(values, RunMetadata()))
+    report = assess_run(RunLog(values, _bare_meta()))
     assert not report.ok
     assert any("success_rate" in p for p in report.problems)
 
@@ -126,7 +131,7 @@ def test_low_success_rate_is_rejected(rng):
 def test_long_control_periods_are_rejected(rng):
     values = _records(2000, rng=rng)
     values[:200, SCHEMA.index("dt_s")] = 5e-3
-    report = assess_run(RunLog(values, RunMetadata()))
+    report = assess_run(RunLog(values, _bare_meta()))
     assert not report.ok
     assert any("control periods exceeded" in p for p in report.problems)
 
@@ -134,17 +139,32 @@ def test_long_control_periods_are_rejected(rng):
 def test_reflex_mode_is_rejected(rng):
     values = _records(2000, rng=rng)
     values[1000:1100, SCHEMA.index("robot_mode")] = 4.0     # kReflex
-    report = assess_run(RunLog(values, RunMetadata()))
+    report = assess_run(RunLog(values, _bare_meta()))
     assert not report.ok
     assert any("Idle/Move" in p for p in report.problems)
 
 
-def test_nonzero_configured_load_is_rejected(rng):
-    """Both runs of a pair must be collected with the load zeroed."""
-    meta = RunMetadata(m_load=0.5)
+def test_bare_run_declaring_a_load_is_rejected(rng):
+    meta = RunMetadata(loaded=False, m_load=0.5)
     report = assess_run(RunLog(_records(500, rng=rng), meta))
     assert not report.ok
-    assert any("configured total load" in p for p in report.problems)
+    assert any("BARE run declares a load" in p for p in report.problems)
+
+
+def test_loaded_run_declaring_no_load_is_rejected(rng):
+    """Carrying an unmodelled tool breaks gravity compensation and risks a reflex."""
+    meta = RunMetadata(loaded=True, m_load=0.0)
+    report = assess_run(RunLog(_records(500, rng=rng), meta))
+    assert not report.ok
+    assert any("LOADED run declares zero load" in p for p in report.problems)
+
+
+def test_truthfully_declared_pair_is_accepted(rng):
+    loaded = RunLog(_records(500, rng=rng), RunMetadata(loaded=True, m_load=0.5))
+    bare = RunLog(_records(500, rng=rng), RunMetadata(loaded=False))
+    assert assess_run(loaded).ok
+    assert assess_run(bare).ok
+    assert_pair_compatible(loaded, bare)
 
 
 # ---------------------------------------------------------------- block concatenation
@@ -193,7 +213,7 @@ def test_single_block_still_works(tmp_path, rng):
 
 def test_pair_compatibility_checks(rng):
     values = _records(100, rng=rng)
-    loaded = RunLog(values, RunMetadata(loaded=True, samples_per_period=50))
+    loaded = RunLog(values, RunMetadata(loaded=True, samples_per_period=50, m_load=0.5))
     bare = RunLog(values, RunMetadata(loaded=False, samples_per_period=50))
     assert_pair_compatible(loaded, bare)
 
@@ -201,9 +221,15 @@ def test_pair_compatibility_checks(rng):
         assert_pair_compatible(loaded, RunLog(values, RunMetadata(loaded=True,
                                                                  samples_per_period=50)))
 
-    mismatched = RunLog(values, RunMetadata(loaded=False, samples_per_period=50, m_ee=0.7))
-    with pytest.raises(ValueError, match="different configured end-effector"):
-        assert_pair_compatible(loaded, mismatched)
+    # A bare run must not claim to be carrying anything.
+    bad_bare = RunLog(values, RunMetadata(loaded=False, samples_per_period=50, m_ee=0.7))
+    with pytest.raises(ValueError, match="bare run declares a load"):
+        assert_pair_compatible(loaded, bad_bare)
+
+    # A loaded run that declares nothing means the tool was carried unmodelled.
+    unmodelled = RunLog(values, RunMetadata(loaded=True, samples_per_period=50))
+    with pytest.raises(ValueError, match="declares zero load"):
+        assert_pair_compatible(unmodelled, bare)
 
     with pytest.raises(ValueError, match="different period lengths"):
         assert_pair_compatible(loaded, RunLog(values, RunMetadata(loaded=False,

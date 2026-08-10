@@ -27,8 +27,14 @@ void setCollectionBehavior(franka::Robot& robot) {
   robot.setCartesianImpedance({{3000, 3000, 3000, 300, 300, 300}});
 }
 
+void applyLoad(franka::Robot& robot, double mass, const std::array<double, 3>& com,
+               const std::array<double, 9>& inertia) {
+  robot.setLoad(mass, com, inertia);
+}
+
 void zeroLoad(franka::Robot& robot) {
-  robot.setLoad(0.0, {{0.0, 0.0, 0.0}}, {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+  applyLoad(robot, 0.0, {{0.0, 0.0, 0.0}},
+            {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
 }
 
 std::string TrajectoryCheck::summary() const {

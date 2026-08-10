@@ -36,7 +36,8 @@ def _guard(report: ConstraintReport, force: bool, what: str) -> None:
 def export_trajectory(path: Path | str, traj: FourierTrajectory, pm: PandaModel,
                       ws: Workspace, limits: PandaLimits, *,
                       sample_rate_hz: float = 1000.0, n_periods: int = 10,
-                      force: bool = False, extra: dict | None = None) -> Path:
+                      force: bool = False, extra: dict | None = None,
+                      payload_phi=None) -> Path:
     """Write the 1 kHz joint trajectory CSV.
 
     Format::
@@ -51,7 +52,9 @@ def export_trajectory(path: Path | str, traj: FourierTrajectory, pm: PandaModel,
         If the trajectory violates a limit or the workspace planes are still
         unmeasured placeholders.
     """
-    report = check_trajectory(pm, ws, limits, traj, n_samples=1000)
+    from .constraints import make_torque_predictor
+    report = check_trajectory(pm, ws, limits, traj, n_samples=1000,
+                              torque_fn=make_torque_predictor(pm, payload_phi))
     _guard(report, force, "excitation trajectory")
 
     t, q, _, _ = traj.sample(sample_rate_hz, n_periods)
@@ -64,6 +67,7 @@ def export_trajectory(path: Path | str, traj: FourierTrajectory, pm: PandaModel,
         "min_clearance_m": float(report.min_half_space_clearance_m),
         "max_velocity_ratio": float(report.max_velocity_ratio),
         "max_acceleration_ratio": float(report.max_acceleration_ratio),
+        "max_torque_ratio": float(report.max_torque_ratio),
         "workspace_measured": bool(not report.placeholder_workspace),
     })
     if extra:

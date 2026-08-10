@@ -253,13 +253,31 @@ def pseudo_inertia_basis() -> np.ndarray:
     return basis
 
 
-def is_physically_consistent(phi: np.ndarray, tol: float = 0.0) -> bool:
-    """True iff ``J(phi)`` is positive definite (up to ``tol``)."""
+def is_physically_consistent(phi: np.ndarray, rtol: float = 1e-12) -> bool:
+    r"""True iff ``J(phi)`` is positive semi-definite to a **relative** tolerance.
+
+    Two deliberate choices:
+
+    *Semi*-definite, not strictly definite. :math:`J \succ 0` characterises bodies with
+    a genuinely three-dimensional mass density; the closure :math:`J \succeq 0` also
+    admits degenerate ones -- a point mass (rank 1), a thin rod, a flat plate. Those are
+    perfectly realizable tools, and a fitted parameter vector legitimately lands on that
+    boundary when the data prefers a nearly planar distribution.
+
+    *Relative* tolerance. ``J`` mixes a mass of order 1 with second moments of order
+    1e-4, so testing an eigenvalue against absolute zero is scale-dependent and fails at
+    machine epsilon: a boundary solution produced by the log-Cholesky parameterisation
+    -- which is consistent *by construction* -- comes back with a minimum eigenvalue of
+    around -1e-17 and would be rejected. The threshold therefore scales with the largest
+    eigenvalue. ``rtol`` sits far above machine epsilon and far below any physically
+    meaningful violation.
+    """
     try:
         eigvals = np.linalg.eigvalsh(pseudo_inertia(phi))
     except np.linalg.LinAlgError:
         return False
-    return bool(eigvals.min() > tol)
+    scale = max(float(eigvals.max()), 0.0)
+    return bool(eigvals.min() >= -rtol * max(scale, 1e-300))
 
 
 def consistency_report(phi: np.ndarray) -> dict[str, object]:
@@ -269,7 +287,9 @@ def consistency_report(phi: np.ndarray) -> dict[str, object]:
     out: dict[str, object] = {
         "mass_positive": bool(phi[0] > 0.0),
         "pseudo_inertia_min_eig": float(eig_j.min()),
-        "physically_consistent": bool(eig_j.min() > 0.0),
+        # Relative, for the reasons in is_physically_consistent.
+        "pseudo_inertia_min_eig_relative": float(eig_j.min() / max(eig_j.max(), 1e-300)),
+        "physically_consistent": is_physically_consistent(phi),
     }
     if phi[0] > 0.0:
         _, _, ic = phi_to_mci(phi)

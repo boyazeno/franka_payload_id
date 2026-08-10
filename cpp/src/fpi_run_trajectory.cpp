@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 #include <franka/exception.h>
@@ -20,6 +21,50 @@
 #include "fpi/safety.hpp"
 #include "fpi/state_log.hpp"
 #include "fpi/trajectory.hpp"
+
+namespace {
+
+// Parses "--load-com x,y,z"; returns {0,0,0} when absent.
+std::array<double, 3> parseCom(const fpi::Args& args) {
+  std::array<double, 3> com{{0.0, 0.0, 0.0}};
+  const std::string text = args.get("load-com", "");
+  if (text.empty()) return com;
+  std::stringstream ss(text);
+  std::string cell;
+  int i = 0;
+  while (std::getline(ss, cell, ',')) {
+    if (i >= 3) throw std::runtime_error("--load-com takes exactly 3 comma-separated values");
+    com[i++] = std::stod(cell);
+  }
+  if (i != 3) throw std::runtime_error("--load-com takes exactly 3 comma-separated values");
+  return com;
+}
+
+// Declares the payload the robot is physically carrying for this run.
+void configureLoad(franka::Robot& robot, const fpi::Args& args, bool loaded) {
+  if (args.flag("no-zero-load")) {
+    std::cout << "leaving the configured load untouched (--no-zero-load); make sure "
+                 "Desk matches what is physically attached\n";
+    return;
+  }
+  const double mass = loaded ? args.number("load-mass", 0.0) : 0.0;
+  const auto com = loaded ? parseCom(args) : std::array<double, 3>{{0.0, 0.0, 0.0}};
+  fpi::applyLoad(robot, mass, com, {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+
+  if (loaded && mass <= 0.0) {
+    std::cout << "WARNING: running LOADED with the configured load set to zero.\n"
+                 "  Gravity compensation will not account for the tool, the arm will sag\n"
+                 "  under the impedance error, and the robot may abort with\n"
+                 "  tau_J_range_violation. Pass --load-mass (and --load-com) with the\n"
+                 "  tool's approximate values from config/tool.yaml.\n";
+  } else {
+    std::cout << "configured load: " << mass << " kg at [" << com[0] << ", " << com[1]
+              << ", " << com[2] << "] m (flange frame)\n";
+  }
+}
+
+}  // namespace
+
 
 namespace {
 
@@ -36,8 +81,16 @@ void usage() {
       "                      use 0.2 for the first hardware run\n"
       "  --simulate          generate the log without touching a robot, for testing\n"
       "                      the file format off-hardware\n"
-      "  --no-zero-load      do NOT zero the configured load (not recommended:\n"
-      "                      both runs of a pair must have identical load settings)\n";
+      "\n"
+      "  --load-mass <kg>    tool mass to DECLARE to the robot for a --loaded run.\n"
+      "  --load-com x,y,z    tool centre of mass in the flange frame [m].\n"
+      "                      Declare the payload truthfully: tau_J is a physical\n"
+      "                      measurement and does not care what the controller\n"
+      "                      believes, but correct gravity compensation is what keeps\n"
+      "                      both runs tracking the same reference -- and running with\n"
+      "                      an unmodelled tool invites tau_J_range_violation.\n"
+      "                      A --bare run always declares zero.\n"
+      "  --no-zero-load      leave the configured load alone (use Desk's setting).\n";
 }
 
 // Writes a plausible log with no robot attached, so the record format and the Python
@@ -129,7 +182,7 @@ int main(int argc, char** argv) {
     // data in the ControlException.
     franka::Robot robot(ip, franka::RealtimeConfig::kEnforce, 5000);
     fpi::setCollectionBehavior(robot);
-    if (!args.flag("no-zero-load")) fpi::zeroLoad(robot);
+    configureLoad(robot, args, args.flag("loaded"));
 
     const franka::RobotState initial = robot.readOnce();
     if (!fpi::nearStart(initial.q, played.q.front(), 0.5)) {

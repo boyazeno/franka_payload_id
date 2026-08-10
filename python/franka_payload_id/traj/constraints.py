@@ -81,6 +81,25 @@ class ConstraintReport:
         return "\n".join(lines)
 
 
+def make_torque_predictor(pm: PandaModel, payload_phi: np.ndarray | None = None):
+    """Return ``f(q, qd, qdd) -> (K, 7)`` predicting joint torque [Nm] via RNEA.
+
+    Includes the payload when given, since it only ever *increases* the requirement.
+    The prediction is rigid-body only: it excludes joint friction and whatever
+    corrective effort the internal impedance controller adds, so the derating factor in
+    ``config/experiment.yaml`` has to cover those. Treat it as a budget, not a bound.
+    """
+    model = pm if payload_phi is None else pm.with_payload(payload_phi)
+
+    def predict(q: np.ndarray, qd: np.ndarray, qdd: np.ndarray) -> np.ndarray:
+        q = np.atleast_2d(q)
+        qd = np.atleast_2d(qd)
+        qdd = np.atleast_2d(qdd)
+        return np.array([model.rnea(q[k], qd[k], qdd[k]) for k in range(q.shape[0])])
+
+    return predict
+
+
 def monitored_positions(pm: PandaModel, ws: Workspace, q: np.ndarray) -> np.ndarray:
     """Base-frame positions of every monitored point, shape ``(n_points, 3)``."""
     pm.forward(q)

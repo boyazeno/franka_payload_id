@@ -74,8 +74,9 @@ int main(int argc, char** argv) {
               << ", " << initial.F_x_Cload[2] << "] m\n";
     std::cout << "  m_total   = " << initial.m_total << " kg\n";
     if (initial.m_total != 0.0) {
-      std::cout << "  NOTE: the configured load is non-zero. Collection runs must be made\n"
-                   "        with it zeroed so both runs of a pair track identically.\n";
+      std::cout << "  NOTE: a load is configured. Each collection run must declare what it\n"
+                   "        is actually carrying: the tool on a --loaded run, zero on a\n"
+                   "        --bare one.\n";
     }
     printMatrix("F_T_EE", initial.F_T_EE);
     printMatrix("O_T_EE", initial.O_T_EE);

@@ -171,10 +171,18 @@ These are not polish. Each was measured to change the answer:
    ```
 
    The static stage does not need this: its gravity signal is ~50x the drift residual.
-3. **Zero the configured load in both runs** (the collector does this unless you pass
-   `--no-zero-load`). Different load settings mean the internal controller tracks
-   differently in each run, so the difference is no longer the payload alone. `assess_run`
-   rejects runs that violate this.
+3. **Declare the payload truthfully in each run** — `--load-mass` / `--load-com` on the
+   loaded runs, zero on the bare ones. `tau_J` is a physical link-side measurement and
+   does not care what the controller believes, so the declaration cannot bias the
+   difference directly; it acts only through the *achieved motion*. Correct gravity
+   compensation keeps each run on its reference, and therefore keeps the two runs on
+   each other — which is what the difference method actually needs.
+
+   Zeroing both does **not** make the runs behave identically: the plants differ, so it
+   makes them differently wrong, leaving the loaded run with a steady-state sag and an
+   unmodelled tool that the robot's safety monitor can abort on
+   (`tau_J_range_violation`). `assess_run` now rejects a loaded run that declares
+   nothing, and a bare run that declares something.
 4. **Weigh the tool.** It constrains Stage A and is the strongest validation you have.
 
 ---

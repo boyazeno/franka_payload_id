@@ -26,9 +26,22 @@ extern const Vector7 kTauMax;
 // external torque is large by construction and default thresholds trip immediately.
 void setCollectionBehavior(franka::Robot& robot);
 
-// Zeroes the configured load. Both runs of a difference pair must be collected with
-// identical (normally zero) load parameters, or the internal controller tracks
-// differently in each and the torque difference is not the payload alone.
+// Configures the payload the robot is physically carrying: the tool's approximate mass
+// and centre of mass for a loaded run, zero for a bare run.
+//
+// Declare it TRUTHFULLY in each run rather than zeroing both. tau_J is a physical
+// link-side measurement and does not care what the controller believes, so the only
+// path by which the configuration can affect the difference is through the achieved
+// motion. Correct gravity compensation makes each run track its reference closely, so
+// the two runs track *each other* closely -- which is what the difference method
+// actually needs. Zeroing both does not make the two runs behave identically; the
+// plants differ, so it makes them differently wrong, and it leaves the loaded run with
+// a steady-state position error and an unmodelled payload the safety monitor can trip
+// over.
+void applyLoad(franka::Robot& robot, double mass, const std::array<double, 3>& com,
+               const std::array<double, 9>& inertia);
+
+// Convenience: applyLoad(robot, 0, {0,0,0}, {0...}).
 void zeroLoad(franka::Robot& robot);
 
 struct TrajectoryCheck {

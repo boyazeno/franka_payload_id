@@ -36,7 +36,12 @@ from scipy.optimize import minimize
 
 from ..config import PandaLimits, Workspace
 from ..model import PandaModel, scaling_matrix, stack_regressor
-from .constraints import ConstraintReport, check_trajectory, half_space_clearances
+from .constraints import (
+    ConstraintReport,
+    check_trajectory,
+    half_space_clearances,
+    make_torque_predictor,
+)
 from .fourier import N_JOINTS, FourierTrajectory
 
 
@@ -67,7 +72,8 @@ def regressor_condition(pm: PandaModel, traj: FourierTrajectory, n_samples: int,
 
 
 def _penalty(pm: PandaModel, ws: Workspace, limits: PandaLimits,
-             traj: FourierTrajectory, n_collocation: int) -> float:
+             traj: FourierTrajectory, n_collocation: int,
+             torque_fn=None) -> float:
     """Smooth non-negative penalty; zero exactly when every constraint is satisfied."""
     t = np.linspace(0.0, traj.period, int(n_collocation), endpoint=False)
     q, qd, qdd = traj(t)
@@ -83,6 +89,10 @@ def _penalty(pm: PandaModel, ws: Workspace, limits: PandaLimits,
     q1 = q[:, 0]
     pen += np.sum(np.maximum(ws.q1_min - q1, 0.0) ** 2)
     pen += np.sum(np.maximum(q1 - ws.q1_max, 0.0) ** 2)
+
+    if torque_fn is not None:
+        tau = np.asarray(torque_fn(q, qd, qdd))
+        pen += float(np.sum(np.maximum(np.abs(tau) / limits.tau_max - 1.0, 0.0) ** 2))
 
     for conf in q:
         clear = half_space_clearances(pm, ws, conf)
@@ -103,7 +113,8 @@ def _information_term(cond: float, log_det: float, criterion: str) -> float:
 
 def _objective(x: np.ndarray, pm: PandaModel, ws: Workspace, limits: PandaLimits,
                n_harmonics: int, base_frequency: float, n_collocation: int,
-               length_scale: float, criterion: str, penalty_weight: float) -> float:
+               length_scale: float, criterion: str, penalty_weight: float,
+               torque_fn=None) -> float:
     """Single smooth expression: information term plus a quadratic constraint penalty.
 
     Branching on feasibility (as an earlier version did) makes the objective
@@ -121,7 +132,7 @@ def _objective(x: np.ndarray, pm: PandaModel, ws: Workspace, limits: PandaLimits
     if not np.isfinite(log_det) or not np.isfinite(cond):
         return 1e9
 
-    pen = _penalty(pm, ws, limits, traj, n_collocation)
+    pen = _penalty(pm, ws, limits, traj, n_collocation, torque_fn)
     return _information_term(cond, log_det, criterion) + penalty_weight * pen
 
 
@@ -138,7 +149,8 @@ def _scaled(traj: FourierTrajectory, gamma: float) -> FourierTrajectory:
 def _restore_feasibility(pm: PandaModel, ws: Workspace, limits: PandaLimits,
                          traj: FourierTrajectory, n_samples: int,
                          tol: float = 1e-3,
-                         backoff: float = 0.99) -> tuple[FourierTrajectory, float]:
+                         backoff: float = 0.99,
+                         torque_fn=None) -> tuple[FourierTrajectory, float]:
     """Largest ``gamma`` in (0, 1] for which the hard checker passes, by bisection.
 
     Returns ``(trajectory, gamma)``. If even a nearly static trajectory is infeasible
@@ -154,7 +166,8 @@ def _restore_feasibility(pm: PandaModel, ws: Workspace, limits: PandaLimits,
     dense = max(int(n_samples), 1000)
 
     def feasible(g: float) -> bool:
-        return check_trajectory(pm, ws, limits, _scaled(traj, g), n_samples=dense).ok
+        return check_trajectory(pm, ws, limits, _scaled(traj, g), n_samples=dense,
+                                torque_fn=torque_fn).ok
 
     if feasible(1.0):
         return traj, 1.0
@@ -201,15 +214,19 @@ def optimize_trajectory(pm: PandaModel, ws: Workspace, limits: PandaLimits, *,
                         criterion: str = "d_optimal", n_restarts: int = 8,
                         max_iter: int = 300, seed: int = 0,
                         amplitude: float = 0.35,
-                        verify_samples: int = 500) -> OptimizationResult:
+                        verify_samples: int = 500,
+                        payload_phi: np.ndarray | None = None) -> OptimizationResult:
     """Multi-start optimisation of a Fourier excitation trajectory.
 
     ``limits`` must already be derated. The returned result is only marked ``ok`` if
     the independent hard checker in :mod:`.constraints` also passes.
     """
     rng = np.random.default_rng(seed)
+    # Predict torque with the payload attached: it only raises the requirement, and
+    # leaving it out is how a trajectory that is fine bare trips a reflex loaded.
+    torque_fn = make_torque_predictor(pm, payload_phi)
     args = (pm, ws, limits, n_harmonics, base_frequency, n_collocation,
-            length_scale, criterion, 1e4)
+            length_scale, criterion, 1e4, torque_fn)
 
     best: OptimizationResult | None = None
     for _ in range(int(n_restarts)):
@@ -222,7 +239,8 @@ def optimize_trajectory(pm: PandaModel, ws: Workspace, limits: PandaLimits, *,
             np.asarray(res.x), n_harmonics, base_frequency)
         # The penalty optimum typically sits marginally outside the feasible set;
         # shrink until the independent hard checker accepts it.
-        candidate, gamma = _restore_feasibility(pm, ws, limits, candidate, verify_samples)
+        candidate, gamma = _restore_feasibility(pm, ws, limits, candidate, verify_samples,
+                                                torque_fn=torque_fn)
         if gamma <= 0.0:
             continue
 
@@ -230,7 +248,8 @@ def optimize_trajectory(pm: PandaModel, ws: Workspace, limits: PandaLimits, *,
                                             length_scale)
         if not np.isfinite(log_det):
             continue
-        report = check_trajectory(pm, ws, limits, candidate, n_samples=verify_samples)
+        report = check_trajectory(pm, ws, limits, candidate, n_samples=verify_samples,
+                                  torque_fn=torque_fn)
         value = _information_term(cond, log_det, criterion)
 
         if best is None or value < best.objective_value:

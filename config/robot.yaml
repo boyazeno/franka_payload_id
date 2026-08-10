@@ -13,10 +13,11 @@ log_size: 5000
 move_speed_factor: 0.15
 
 # Collision behaviour thresholds passed to Robot::setCollisionBehavior.
-# Raised well above defaults: we are deliberately carrying an *unmodelled* payload
-# (configured load is zeroed during collection), so the robot's own estimate of
-# external torque is large by construction and default thresholds would trip a
-# joint_reflex immediately.
+# Raised above the defaults so that carrying a tool is not itself treated as a
+# collision. Note these thresholds govern joint_reflex / cartesian_reflex only --
+# tau_J_range_violation is a separate hard limit on the measured joint torque and
+# cannot be relaxed here. The remedy for that one is to declare the payload (so gravity
+# compensation is correct) and to keep the trajectory inside the torque budget.
 collision:
   lower_torque_thresholds_acceleration: [40.0, 40.0, 36.0, 36.0, 24.0, 20.0, 18.0]
   upper_torque_thresholds_acceleration: [40.0, 40.0, 36.0, 36.0, 24.0, 20.0, 18.0]

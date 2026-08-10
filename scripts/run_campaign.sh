@@ -18,6 +18,19 @@ RESULTS="$DATA/results"
 IMAGE="${FPI_ROBOT_IMAGE:-fpi-robot:0.9.2}"
 mkdir -p "$RAW" "$RESULTS"
 
+# Declare the tool to the robot on LOADED runs. Read from config/tool.yaml so there is
+# one source of truth. Without this the robot carries an unmodelled payload: gravity
+# compensation is wrong, the arm sags into the impedance error, tracking differs from the
+# bare run, and the controller can abort with tau_J_range_violation.
+LOAD_MASS=$(python3 -c "import yaml;d=yaml.safe_load(open('config/tool.yaml'));print(d['mass_scale'] or 0)")
+LOAD_COM=$(python3 -c "
+import yaml
+d = yaml.safe_load(open('config/tool.yaml'))
+bb = d['bounding_box']
+print(','.join(str(0.5*(a+b)) for a, b in zip(bb['min'], bb['max'])))")
+echo "declaring tool to the robot on loaded runs: ${LOAD_MASS} kg at [${LOAD_COM}] m"
+LOADED_ARGS="--loaded --load-mass ${LOAD_MASS} --load-com ${LOAD_COM}"
+
 robot() {
   docker run --rm -it --network=host --cap-add=SYS_NICE \
     --ulimit rtprio=99 --ulimit rttime=-1 --ulimit memlock=-1 \
@@ -44,7 +57,7 @@ pause "ATTACH the tool. Then warm the robot up for 15-20 minutes before continui
 
 echo "=== 2. dry run at 20% amplitude ==="
 robot fpi_run_trajectory --ip "$IP" --traj /data/raw/excite.csv \
-      --out /data/raw/dryrun --loaded --dry-run 0.2
+      --out /data/raw/dryrun $LOADED_ARGS --dry-run 0.2
 pause "Dry run complete. Motion looked safe?"
 
 # -----------------------------------------------------------------------------------
@@ -68,7 +81,7 @@ pause "Dry run complete. Motion looked safe?"
 
 echo "=== 3. dynamic block 1 of 4: LOADED ==="
 robot fpi_run_trajectory --ip "$IP" --traj /data/raw/excite.csv \
-      --out /data/raw/dyn_loaded_1 --loaded
+      --out /data/raw/dyn_loaded_1 $LOADED_ARGS
 
 pause "REMOVE the tool.  (swap 1 of 2)"
 
@@ -88,11 +101,11 @@ pause "ATTACH the tool.  (swap 2 of 2)"
 
 echo "=== 6. dynamic block 4 of 4: LOADED ==="
 robot fpi_run_trajectory --ip "$IP" --traj /data/raw/excite.csv \
-      --out /data/raw/dyn_loaded_2 --loaded
+      --out /data/raw/dyn_loaded_2 $LOADED_ARGS
 
 echo "=== 6b. static sweep, loaded ==="
 robot fpi_static_poses --ip "$IP" --poses /data/raw/poses.csv \
-      --out /data/raw/static_loaded --loaded
+      --out /data/raw/static_loaded $LOADED_ARGS
 
 echo "=== 7. identification ==="
 # The two blocks per configuration are passed as a comma-separated list; the pipeline

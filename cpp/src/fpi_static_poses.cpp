@@ -9,6 +9,7 @@
 // the offline side can inspect the settling behaviour and choose its own window.
 #include <cstdlib>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 #include <franka/exception.h>
@@ -22,6 +23,50 @@
 
 namespace {
 
+// Parses "--load-com x,y,z"; returns {0,0,0} when absent.
+std::array<double, 3> parseCom(const fpi::Args& args) {
+  std::array<double, 3> com{{0.0, 0.0, 0.0}};
+  const std::string text = args.get("load-com", "");
+  if (text.empty()) return com;
+  std::stringstream ss(text);
+  std::string cell;
+  int i = 0;
+  while (std::getline(ss, cell, ',')) {
+    if (i >= 3) throw std::runtime_error("--load-com takes exactly 3 comma-separated values");
+    com[i++] = std::stod(cell);
+  }
+  if (i != 3) throw std::runtime_error("--load-com takes exactly 3 comma-separated values");
+  return com;
+}
+
+// Declares the payload the robot is physically carrying for this run.
+void configureLoad(franka::Robot& robot, const fpi::Args& args, bool loaded) {
+  if (args.flag("no-zero-load")) {
+    std::cout << "leaving the configured load untouched (--no-zero-load); make sure "
+                 "Desk matches what is physically attached\n";
+    return;
+  }
+  const double mass = loaded ? args.number("load-mass", 0.0) : 0.0;
+  const auto com = loaded ? parseCom(args) : std::array<double, 3>{{0.0, 0.0, 0.0}};
+  fpi::applyLoad(robot, mass, com, {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+
+  if (loaded && mass <= 0.0) {
+    std::cout << "WARNING: running LOADED with the configured load set to zero.\n"
+                 "  Gravity compensation will not account for the tool, the arm will sag\n"
+                 "  under the impedance error, and the robot may abort with\n"
+                 "  tau_J_range_violation. Pass --load-mass (and --load-com) with the\n"
+                 "  tool's approximate values from config/tool.yaml.\n";
+  } else {
+    std::cout << "configured load: " << mass << " kg at [" << com[0] << ", " << com[1]
+              << ", " << com[2] << "] m (flange frame)\n";
+  }
+}
+
+}  // namespace
+
+
+namespace {
+
 void usage() {
   std::cout <<
       "fpi_static_poses --ip <fci-ip> --poses <file.csv> --out <stem> [options]\n"
@@ -29,7 +74,9 @@ void usage() {
       "  --loaded / --bare   record which configuration this run is (required)\n"
       "  --dwell <s>         hold time per pose (default 2.0)\n"
       "  --speed <0..1>      motion speed factor (default 0.15)\n"
-      "  --no-zero-load      do NOT zero the configured load (not recommended)\n"
+      "  --load-mass <kg>    tool mass to DECLARE for a --loaded run (see below)\n"
+      "  --load-com x,y,z    tool centre of mass in the flange frame [m]\n"
+      "  --no-zero-load      leave the configured load alone (use Desk's setting)\n"
       "\n"
       "  The pose CSV carries, per row: direction, 7 approach angles, 7 measure angles.\n"
       "  Rows are executed in order, so the two approach directions of a pose are\n"
@@ -71,7 +118,7 @@ int main(int argc, char** argv) {
     const std::string ip = args.require("ip");
     franka::Robot robot(ip, franka::RealtimeConfig::kEnforce, 5000);
     fpi::setCollectionBehavior(robot);
-    if (!args.flag("no-zero-load")) fpi::zeroLoad(robot);
+    configureLoad(robot, args, args.flag("loaded"));
 
     const auto dwell_samples = static_cast<std::size_t>(dwell * 1000.0) + 200;
     fpi::StateLog log(poses.size() * dwell_samples + 2000);

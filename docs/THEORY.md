@@ -159,6 +159,34 @@ model error of ~0.5–2 N·m RMS, which is larger than the entire gravity torque
 tool. That is why the difference method is the primary estimator here and the model-based
 one appears only as a cross-check.
 
+### 4.0 Declare the payload truthfully in each run
+
+$\tau_J$ is a **physical link-side measurement**: it does not depend on what the
+controller believes is attached. The configured load can therefore only affect the
+difference *through the achieved motion*.
+
+That settles what the configuration should be. With the tool declared, gravity
+compensation is right and the run tracks its reference; with it zeroed, the internal
+impedance controller must make up the tool's weight through position error, leaving a
+steady-state sag of order
+
+$$ \Delta q \approx \frac{m g \lVert c\rVert}{K} \sim \frac{3.4}{3000} \approx 1\ \text{mrad} $$
+
+Small — but the arm's gravity gradient $\partial g/\partial q$ reaches tens of N·m/rad,
+so 1 mrad of mismatch injects ~0.03 N·m into $\Delta\tau$, several times a small tool's
+whole inertia signature.
+
+Declaring the load **truthfully in each run** (tool parameters when loaded, zero when
+bare) makes *both* runs track their common reference, and hence each other. Zeroing both
+does not make them behave identically: the plants differ, so it makes them differently
+wrong. It also runs the robot with an unmodelled payload, which Franka's safety monitor
+can abort as `tau_J_range_violation`.
+
+A rough declaration suffices — the scale mass and the bounding-box centre — because its
+only job is to keep gravity compensation approximately right. `assess_run` enforces the
+consistency, and `assert_pair_compatible` requires the bare run to declare zero and the
+loaded run to declare something.
+
 ### 4.1 Why the collection order matters
 
 Thermal drift is a function of wall-clock time, so a sample collected at time $t$ carries
@@ -567,6 +595,9 @@ is entirely adequate — and is what the pipeline does automatically, saying so 
 | 7.1 | analytic constraint gradient | `traj/constraints.py::half_space_jacobian` | `test_half_space_jacobian_matches_finite_differences` |
 | 7.1 | export safety gate | `traj/export.py::export_trajectory` | `test_export_refuses_placeholder_workspace` |
 | 4 | difference of torques | `data/preprocess.py::build_dynamic_dataset` | `test_dynamic_recovers_exactly_without_noise` |
+| 4.0 | truthful load declaration | `cpp/src/safety.cpp::applyLoad`, `data/quality.py::assess_run` | `test_loaded_run_declaring_no_load_is_rejected`, `test_truthfully_declared_pair_is_accepted` |
+| 7 | torque budget | `traj/constraints.py::make_torque_predictor` | `test_torque_limit_is_enforced` |
+| 8 | relative consistency tolerance | `model/params.py::is_physically_consistent` | `test_boundary_solutions_are_accepted` |
 | 4.1 | ABBA block schedule | `synthetic.py::block_schedule`, `block_start_times` | `test_block_schedules_have_the_expected_drift_imbalance` |
 | 4.1 | drift imbalance | `synthetic.py::drift_imbalance` | as above |
 | 4.1 | end-to-end drift cancellation | `synthetic.py::wall_clock_times` | `test_abba_scheduling_cancels_thermal_drift` |
@@ -611,8 +642,8 @@ Two things to be careful about:
   (§3);
 * `Robot::setLoad` sets the **external load**, whereas the end-effector fields are
   Desk-only. If a gripper is also mounted, it belongs in the Desk end-effector fields and
-  the tool identified here belongs in the load. Both runs of a difference pair must be
-  collected with these zeroed, which `assess_run` enforces.
+  the tool identified here belongs in the load. During collection each run must declare
+  what it is *actually* carrying (§4.0) — not zero — which `assess_run` enforces.
 
 The generated `payload_params.yaml` provides both forms, and `report.md` prints a
 ready-to-paste `setLoad` call.

@@ -95,13 +95,24 @@ def assess_run(run: RunLog, *, min_success_rate: float = 0.99,
         problems.append(f"{n_err} samples carry a non-zero error bitmask")
         ok = False
 
-    # A pair of runs must not differ in configured load, or the internal controller
-    # tracked differently in the two and the difference is not purely the payload.
+    # The configured load must match what was physically attached. Declaring it
+    # truthfully is what keeps gravity compensation correct, and correct gravity
+    # compensation is what makes both runs track the same reference -- which is the
+    # property the difference method actually needs. A bare run must declare zero; a
+    # loaded run declaring zero means the tool was unmodelled, which degrades tracking
+    # and risks a tau_J_range_violation abort.
     total_mass, _, _ = run.meta.load_configuration()
-    if total_mass != 0.0:
+    if not run.meta.loaded and total_mass != 0.0:
         problems.append(
-            f"configured total load is {total_mass:.4f} kg, not zero. Both runs of a pair "
-            "must be collected with the load zeroed so the controller behaves identically.")
+            f"a BARE run declares a load of {total_mass:.4f} kg. Nothing was attached, so "
+            "the configured load must be zero.")
+        ok = False
+    if run.meta.loaded and total_mass == 0.0:
+        problems.append(
+            "a LOADED run declares zero load: the tool was attached but unmodelled. "
+            "Gravity compensation was therefore wrong, tracking differs from the bare "
+            "run, and the robot may have aborted with tau_J_range_violation. Re-run with "
+            "--load-mass / --load-com set to the tool's approximate values.")
         ok = False
 
     return QualityReport(ok=ok, n_samples=run.n_samples, min_success_rate=min_sr,
@@ -122,10 +133,20 @@ def assert_pair_compatible(loaded: RunLog, bare: RunLog) -> None:
     if loaded.meta.samples_per_period != bare.meta.samples_per_period:
         raise ValueError("paired runs have different period lengths")
 
-    lm, lc, li = loaded.meta.load_configuration()
-    bm, bc, bi = bare.meta.load_configuration()
-    if not (np.isclose(lm, bm) and np.allclose(lc, bc) and np.allclose(li, bi)):
+    # The two runs are EXPECTED to declare different loads -- that is the point. What
+    # must hold is that each declared what it was actually carrying. tau_J is a physical
+    # link-side measurement, so the declaration cannot bias the difference directly; it
+    # only acts through the achieved motion, and a truthful declaration is what keeps
+    # both runs on the same reference trajectory.
+    bare_mass, _, _ = bare.meta.load_configuration()
+    if bare_mass != 0.0:
         raise ValueError(
-            "the two runs were collected with different configured end-effector/load "
-            "parameters. The internal controller then tracks differently in each run, "
-            "so their torque difference is not the payload alone.")
+            f"the bare run declares a load of {bare_mass:.4f} kg; it must declare zero.")
+
+    loaded_mass, _, _ = loaded.meta.load_configuration()
+    if loaded_mass == 0.0:
+        raise ValueError(
+            "the loaded run declares zero load, so the tool was carried unmodelled. "
+            "Gravity compensation was wrong in that run only, so the two runs did not "
+            "track the same trajectory and their torque difference contains an arm-"
+            "dynamics term. Re-collect with --load-mass / --load-com.")
