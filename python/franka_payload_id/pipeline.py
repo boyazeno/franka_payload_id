@@ -57,13 +57,18 @@ class PairPaths:
         return self._as_list(self.bare)
 
 
-def concatenate_runs(paths: list[Path]) -> RunLog:
-    """Load several blocks of one configuration and concatenate them into one log."""
+def concatenate_runs(paths: list[Path], *, periods_per_block: int | None = None,
+                     verbose: bool = True) -> RunLog:
+    """Load several blocks of one configuration and concatenate them into one log.
+
+    Each block is trimmed to a whole number of periods and then to the **common**
+    number of periods across blocks. What the ABBA cancellation requires is that every
+    block contribute equally to the period average -- and the unit of that average is a
+    period, not a sample. Raw sample counts routinely differ by a few dozen because a
+    dropped frame costs one callback while the run still ends on the same wall-clock
+    deadline; those samples sit in the trailing partial period that is discarded anyway.
+    """
     runs = [load_run(p) for p in paths]
-    if len(runs) == 1:
-        run = runs[0]
-        run.meta.n_blocks = max(int(run.meta.n_blocks or 1), 1)
-        return run
 
     first = runs[0].meta
     for other in runs[1:]:
@@ -74,17 +79,55 @@ def concatenate_runs(paths: list[Path]) -> RunLog:
         if abs(other.meta.sample_rate_hz - first.sample_rate_hz) > 1e-9:
             raise ValueError("blocks were recorded at different sample rates")
 
-    lengths = {r.n_samples for r in runs}
-    if len(lengths) != 1:
+    spp = int(first.samples_per_period)
+    if spp <= 0:
+        raise ValueError("samples_per_period is not recorded in the run metadata")
+
+    whole = [r.n_samples // spp for r in runs]
+    if min(whole) < 1:
         raise ValueError(
-            f"blocks have different lengths {sorted(lengths)}; the ABBA cancellation "
-            "requires every block to contribute the same number of periods")
+            f"a block holds less than one whole period ({min(whole)} of {spp} samples "
+            "each); the run was aborted too early to be usable")
+
+    keep = int(min(whole)) if periods_per_block is None else int(periods_per_block)
+    if keep > min(whole):
+        raise ValueError(
+            f"asked to keep {keep} periods per block but the shortest block holds only "
+            f"{min(whole)}")
+
+    if verbose and (len(set(whole)) > 1 or any(r.n_samples != keep * spp for r in runs)):
+        detail = ", ".join(f"{p.name}: {r.n_samples} samples -> {keep} periods"
+                           for p, r in zip(paths, runs))
+        print(f"trimming each block to {keep} whole periods ({detail})")
 
     meta = runs[0].meta
     meta.n_blocks = len(runs)
-    meta.n_periods = sum(r.meta.n_periods for r in runs)
+    meta.n_periods = keep * len(runs)
     meta.run_id = "+".join(p.name for p in paths)
-    return RunLog(np.vstack([r.values for r in runs]), meta)
+    return RunLog(np.vstack([r.values[: keep * spp] for r in runs]), meta)
+
+
+def periods_per_block(run: RunLog) -> int:
+    blocks = max(int(run.meta.n_blocks or 1), 1)
+    return int(run.meta.n_periods) // blocks
+
+
+def trim_to_periods_per_block(run: RunLog, keep: int) -> RunLog:
+    """Re-slice an already-concatenated log down to ``keep`` periods per block."""
+    spp = int(run.meta.samples_per_period)
+    blocks = max(int(run.meta.n_blocks or 1), 1)
+    current = periods_per_block(run)
+    if keep == current:
+        return run
+    if keep > current:
+        raise ValueError(f"cannot grow {current} periods per block to {keep}")
+
+    rows = np.concatenate([
+        np.arange(b * current * spp, b * current * spp + keep * spp) for b in range(blocks)
+    ])
+    meta = run.meta
+    meta.n_periods = keep * blocks
+    return RunLog(run.values[rows], meta)
 
 
 def _prior(cfg: Config, mass_hint: float | None = None) -> InertialParams:
@@ -142,6 +185,22 @@ def run_static_stage(pm: PandaModel, cfg: Config, dataset: StaticDataset):
 # ---------------------------------------------------------------------------
 def dynamic_dataset_from_runs(loaded: RunLog, bare: RunLog, cfg: Config) -> DynamicDataset:
     assert_pair_compatible(loaded, bare)
+
+    # The two configurations can also end up with different period counts -- the runs
+    # are separate invocations and each ends on its own wall-clock deadline. Trim both
+    # to the common minimum so every block on both sides weighs the same in the period
+    # average, which is what keeps the ABBA drift cancellation exact.
+    common = min(periods_per_block(loaded), periods_per_block(bare))
+    if common < 2:
+        raise ValueError(
+            f"only {common} whole period(s) per block survive; at least 2 are needed "
+            "because the first is discarded as settling transient")
+    if periods_per_block(loaded) != common or periods_per_block(bare) != common:
+        print(f"trimming both configurations to {common} periods per block "
+              f"(loaded had {periods_per_block(loaded)}, bare {periods_per_block(bare)})")
+        loaded = trim_to_periods_per_block(loaded, common)
+        bare = trim_to_periods_per_block(bare, common)
+
     pp = cfg.experiment.preprocess
     return build_dynamic_dataset(
         loaded.q, loaded.tau_J, bare.q, bare.tau_J,

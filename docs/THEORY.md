@@ -228,6 +228,15 @@ which is small but not zero. `build_dynamic_dataset` therefore drops the settlin
 from *each* block (`n_blocks`), and `test_settling_period_is_dropped_from_every_block`
 pins it.
 
+The unit of that balance is a **period, not a sample**. Raw block lengths routinely
+differ by a few dozen samples, because a dropped frame costs one callback while the run
+still ends on the same wall-clock deadline — 49913 against 49927 samples is a real
+example, and both hold nine whole 5000-sample periods. `concatenate_runs` therefore trims
+each block to a whole number of periods and then to the common minimum across blocks and
+across the two configurations, rather than demanding equal sample counts. The discarded
+remainder is the trailing partial period, which period-averaging could not have used
+anyway.
+
 **The static stage does not need this.** Its signal is the ~0.4 N·m gravity torque,
 roughly fifty times the drift residual, so a single loaded/bare pair is fine there. The
 dynamic stage, whose inertia signature is ~0.008 N·m, is where the ordering decides the

@@ -209,6 +209,10 @@ fpi inspect --log data/raw/dyn_loaded_1 --plot data/results/quality.png
 `fpi inspect` marks every long cycle on the torque trace, so you can see immediately
 whether the spikes line up with dropped frames.
 
+Drops also make raw block lengths differ slightly (one lost callback, same wall-clock
+deadline). That is handled: blocks are trimmed to whole periods and to the common
+minimum, so ragged lengths cost you the trailing partial period and nothing else.
+
 Host-side fixes, roughly in order of yield:
 
 | | |

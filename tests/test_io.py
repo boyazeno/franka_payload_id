@@ -185,20 +185,62 @@ def test_concatenate_blocks(tmp_path, rng):
     assert merged.meta.n_periods == 8
 
 
-def test_concatenate_rejects_mismatched_blocks(tmp_path, rng):
+def test_concatenate_trims_ragged_blocks_to_whole_periods(tmp_path, rng, capsys):
+    """Dropped frames leave blocks a few samples short; that must not be fatal.
+
+    A drop costs one callback while the run still ends on the same wall-clock deadline,
+    so raw sample counts differ slightly. What ABBA needs is equal *periods* per block,
+    and the extra samples live in the trailing partial period that is discarded anyway.
+    """
+    from franka_payload_id.pipeline import concatenate_runs, periods_per_block
+
+    # 4 periods of 50 samples, minus a handful of dropped frames.
+    save_run(tmp_path / "a", _records(199, rng=rng),
+             RunMetadata(loaded=True, samples_per_period=50, n_periods=4))
+    save_run(tmp_path / "b", _records(187, rng=rng),
+             RunMetadata(loaded=True, samples_per_period=50, n_periods=4))
+
+    merged = concatenate_runs([tmp_path / "a", tmp_path / "b"])
+    assert periods_per_block(merged) == 3          # floor(187/50) == 3 is the binding one
+    assert merged.n_samples == 2 * 3 * 50
+    assert merged.meta.n_blocks == 2
+    assert "trimming each block" in capsys.readouterr().out
+
+
+def test_concatenate_rejects_incompatible_blocks(tmp_path, rng):
     from franka_payload_id.pipeline import concatenate_runs
 
     save_run(tmp_path / "a", _records(200, rng=rng),
              RunMetadata(loaded=True, samples_per_period=50, n_periods=4))
-    save_run(tmp_path / "b", _records(150, rng=rng),
-             RunMetadata(loaded=True, samples_per_period=50, n_periods=3))
-    with pytest.raises(ValueError, match="different lengths"):
-        concatenate_runs([tmp_path / "a", tmp_path / "b"])
-
     save_run(tmp_path / "c", _records(200, rng=rng),
              RunMetadata(loaded=False, samples_per_period=50, n_periods=4))
     with pytest.raises(ValueError, match="loaded and bare"):
         concatenate_runs([tmp_path / "a", tmp_path / "c"])
+
+    # A block that does not even hold one whole period is a genuine failure.
+    save_run(tmp_path / "d", _records(30, rng=rng),
+             RunMetadata(loaded=True, samples_per_period=50, n_periods=1))
+    with pytest.raises(ValueError, match="less than one whole period"):
+        concatenate_runs([tmp_path / "a", tmp_path / "d"])
+
+
+def test_trim_to_periods_per_block_preserves_block_layout(tmp_path, rng):
+    from franka_payload_id.pipeline import (concatenate_runs, periods_per_block,
+                                            trim_to_periods_per_block)
+
+    for i in range(2):
+        save_run(tmp_path / f"blk{i}", _records(200, rng=rng),
+                 RunMetadata(loaded=True, samples_per_period=50, n_periods=4))
+    merged = concatenate_runs([tmp_path / "blk0", tmp_path / "blk1"], verbose=False)
+    assert periods_per_block(merged) == 4
+
+    trimmed = trim_to_periods_per_block(merged, 2)
+    assert periods_per_block(trimmed) == 2
+    assert trimmed.n_samples == 2 * 2 * 50
+    # The kept rows must be the FIRST two periods of each block, not the first four
+    # periods of the concatenation -- otherwise one block would vanish entirely.
+    np.testing.assert_allclose(trimmed.values[:100], merged.values[:100])
+    np.testing.assert_allclose(trimmed.values[100:], merged.values[200:300])
 
 
 def test_single_block_still_works(tmp_path, rng):
