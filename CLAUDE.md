@@ -58,6 +58,12 @@ Dev environment: `uv venv .venv && uv pip install -r requirements.txt && uv pip 
 * **The record schema is a cross-language contract.** `data/robot_log.py::SCHEMA` and
   `cpp/include/fpi/state_log.hpp::kRecordSize` must agree; a test asserts it and the C++
   self-checks at runtime.
+* **A commanded trajectory must start at the measured pose.** The FCI requires
+  `q = q_c` at t=0. Never command the trajectory's first point directly from wherever
+  the robot happens to be: libfranka's rate limiter turns the step into a
+  maximum-acceleration lunge instead of refusing it. `fpi_run_trajectory` approaches the
+  start and then blends out the residual with a raised cosine. The "already there"
+  tolerance is 0.01 rad and is *not* a "close enough to jump" threshold.
 * **Never weaken the export safety gate.** `traj/export.py` refuses to write a trajectory
   while `config/workspace.yaml` still holds unmeasured placeholder planes. The robot
   stands in a corner facing outward.

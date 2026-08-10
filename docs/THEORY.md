@@ -323,8 +323,29 @@ Two properties earn this parameterisation its place:
 * **Exact bandwidth control.** Content lives in $[f_f,\ N f_f]$. With $N=5$,
   $f_f=0.2$ Hz the bandwidth is 1 Hz, far below the ~10–20 Hz joint flexibility modes.
 
-**Boundary conditions.** The FCI requires $\dot q_c = \ddot q_c = 0$ at both ends. Both
-are linear in the coefficients:
+**Boundary conditions.** The FCI requires three things at the start of a commanded
+trajectory: $q = q_c$, $\dot q_c = 0$ and $\ddot q_c = 0$.
+
+The **first** of those is about execution rather than design, and it is easy to violate
+silently. The commanded position at $t=0$ must equal the *measured* configuration. If the
+robot is even a few centiradians away and the trajectory's first point is commanded
+directly, that is a step in one 1 ms tick — a commanded velocity of tens or hundreds of
+rad/s. libfranka's rate limiter clamps it rather than aborting, and the clamping *is* a
+maximum-acceleration lunge toward the start. `fpi_run_trajectory` therefore approaches
+the start with the point-to-point generator and then fades out whatever residual remains
+with a raised-cosine weight,
+
+$$ q_c(t) = q_{\text{traj}}(t) + \big(q_{\text{measured}}(0) - q_{\text{traj}}(0)\big)\,w(t),
+   \qquad w(t) = \tfrac12\Big(1 + \cos\tfrac{\pi t}{T_{\text{blend}}}\Big) $$
+
+so $q_c(0)$ is exactly the measured pose and $\dot w = 0$ at both $t=0$ and
+$t=T_{\text{blend}}$ — no velocity step at either end. For a 4 cm residual over 1 s the
+blend contributes 0.06 rad/s against a 2.175 rad/s limit. The blend must be shorter than
+one period so the affected samples fall inside the settling period the offline stage
+discards (§4.1); the collector refuses otherwise.
+
+The remaining two conditions are design constraints, and both are linear in the
+coefficients:
 
 $$ \dot q_j(0) = \sum_l a_{jl} = 0, \qquad \ddot q_j(0) = \omega_f\sum_l l\,b_{jl} = 0 $$
 

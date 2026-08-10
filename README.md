@@ -184,6 +184,11 @@ These are not polish. Each was measured to change the answer:
    (`tau_J_range_violation`). `assess_run` now rejects a loaded run that declares
    nothing, and a bare run that declares something.
 4. **Weigh the tool.** It constrains Stage A and is the strongest validation you have.
+5. **Let the collector reach the start by itself.** `fpi_run_trajectory` moves to the
+   trajectory's first point with a smooth point-to-point profile and then fades out any
+   residual offset over `--blend` seconds (default 1.0), so the first commanded position
+   equals the measured one. Commanding the trajectory directly from an arbitrary pose
+   makes libfranka's rate limiter lunge at maximum acceleration.
 
 ---
 

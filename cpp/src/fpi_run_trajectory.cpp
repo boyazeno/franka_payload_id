@@ -3,8 +3,10 @@
 // Real-time discipline in the control callback: no allocation, no I/O, no printing.
 // Everything is reserved before robot.control() is entered and the log is written
 // after it returns. The callback has roughly 300 us of budget.
+#include <algorithm>
 #include <atomic>
 #include <csignal>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -77,6 +79,11 @@ void usage() {
       "\n"
       "  --loaded / --bare   record which configuration this run is (required)\n"
       "  --speed <0..1>      speed factor for the approach move (default 0.15)\n"
+      "  --blend <s>         seconds over which the residual offset between the\n"
+      "                      measured start pose and the trajectory's first point is\n"
+      "                      faded out (default 1.0). The FCI requires the commanded\n"
+      "                      position to equal the measured one at t=0; commanding the\n"
+      "                      trajectory directly makes the rate limiter lunge.\n"
       "  --dry-run <0..1>    scale the excitation amplitude about its start pose;\n"
       "                      use 0.2 for the first hardware run\n"
       "  --simulate          generate the log without touching a robot, for testing\n"
@@ -184,12 +191,47 @@ int main(int argc, char** argv) {
     fpi::setCollectionBehavior(robot);
     configureLoad(robot, args, args.flag("loaded"));
 
-    const franka::RobotState initial = robot.readOnce();
-    if (!fpi::nearStart(initial.q, played.q.front(), 0.5)) {
+    // Approach the trajectory start smoothly. The tolerance below is an "is it already
+    // exactly there" test, NOT a "close enough to jump" test: the FCI requires the
+    // commanded position to equal the measured one at t = 0, and any step is turned by
+    // libfranka's rate limiter into a maximum-acceleration lunge toward the start.
+    constexpr double kAlreadyThereRad = 0.01;
+    franka::RobotState initial = robot.readOnce();
+    if (!fpi::nearStart(initial.q, played.q.front(), kAlreadyThereRad)) {
       std::cout << "moving to the trajectory start ...\n";
       MotionGenerator to_start(args.number("speed", 0.15), played.q.front());
       robot.control(to_start);
+      initial = robot.readOnce();
     }
+
+    // Whatever residual remains after the approach is absorbed by a smooth blend rather
+    // than commanded away in one tick. The first commanded point is then EXACTLY the
+    // measured configuration, and the raised-cosine weight has zero derivative at both
+    // ends, so neither the start of the blend nor its end introduces a velocity step.
+    std::array<double, 7> offset{};
+    double worst_offset = 0.0;
+    for (int j = 0; j < 7; ++j) {
+      offset[j] = initial.q[j] - played.q.front()[j];
+      worst_offset = std::max(worst_offset, std::fabs(offset[j]));
+    }
+    if (worst_offset > 0.1) {
+      std::cerr << "error: still " << worst_offset << " rad from the trajectory start "
+                << "after the approach move; refusing to execute\n";
+      return 2;
+    }
+
+    const double blend_s = args.number("blend", 1.0);
+    const double period_s = played.samples_per_period > 0
+                                ? played.samples_per_period / played.sample_rate_hz
+                                : played.duration();
+    if (blend_s >= period_s) {
+      std::cerr << "error: --blend " << blend_s << " s must be shorter than one period ("
+                << period_s << " s), so the blended samples fall entirely inside the\n"
+                   "       settling period that the offline stage discards\n";
+      return 2;
+    }
+    std::cout << "start offset " << worst_offset << " rad, blended out over " << blend_s
+              << " s\n";
 
     fpi::StateLog log(played.size() + 2000);
     std::size_t index = 0;
@@ -207,7 +249,18 @@ int main(int argc, char** argv) {
         if (index >= played.size() || g_stop.load()) {
           return franka::MotionFinished(franka::JointPositions(played.q.back()));
         }
-        franka::JointPositions command(played.q[index]);
+
+        // Raised-cosine blend: weight 1 at t=0 (command == measured start), 0 after
+        // blend_s, with zero slope at both ends.
+        double weight = 0.0;
+        if (elapsed < blend_s) {
+          weight = 0.5 * (1.0 + std::cos(M_PI * elapsed / blend_s));
+        }
+
+        std::array<double, 7> target = played.q[index];
+        for (int j = 0; j < 7; ++j) target[j] += offset[j] * weight;
+
+        franka::JointPositions command(target);
         ++index;
         return command;
       });
