@@ -192,6 +192,40 @@ These are not polish. Each was measured to change the answer:
 
 ---
 
+## Dropped frames
+
+FCI is a 1 kHz UDP stream. When a packet is missed, Control **extrapolates** the
+commanded signal rather than aborting; the discontinuity when the real command resumes
+is a torque spike, and enough of them trip `tau_J_range_violation`. Symptom: motion that
+is mostly fine with occasional loud jolts.
+
+Diagnose before changing anything:
+
+```bash
+fpi_check --ip 172.16.0.2 --seconds 30      # period percentiles, % of cycles over 1.5 ms
+fpi inspect --log data/raw/dyn_loaded_1 --plot data/results/quality.png
+```
+
+`fpi inspect` marks every long cycle on the torque trace, so you can see immediately
+whether the spikes line up with dropped frames.
+
+Host-side fixes, roughly in order of yield:
+
+| | |
+|---|---|
+| Real-time kernel | `uname -a` must show `PREEMPT RT`, and `cat /sys/kernel/realtime` must be `1` |
+| Container flags | `--network=host --cap-add=SYS_NICE --ulimit rtprio=99 --ulimit rttime=-1 --ulimit memlock=-1`. Bridge networking alone will do this. |
+| CPU governor | `cpupower frequency-set -g performance`; disable deep C-states (`processor.max_cstate=1 intel_idle.max_cstate=0`) |
+| Core isolation | `isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3` on the kernel cmdline, then `--cpuset-cpus=2,3` |
+| NIC | a dedicated wired port, `ethtool -C <if> rx-usecs 0`, no power management. Never a USB dongle or Wi-Fi. |
+| Baseline | `cyclictest -m -p95 -t1 -n` — max latency should stay well under 300 us |
+
+The collector helps where it can: it calls `mlockall` at startup (and warns if the
+memlock limit blocks it), pre-faults its buffers, does no I/O in the callback, and
+**indexes the trajectory by elapsed time rather than by callback count** — so a dropped
+frame costs a skipped sample instead of a backward step into the rate limiter. It also
+prints how many cycles ran long at the end of every run.
+
 ## What to expect
 
 **Mass and centre of mass are excellent.** The static stage is a four-parameter,

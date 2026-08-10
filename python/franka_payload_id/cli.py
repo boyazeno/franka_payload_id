@@ -267,6 +267,66 @@ def cmd_verify_fk(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_inspect(args) -> int:
+    """Post-hoc quality report for a collected run, with a diagnostic plot.
+
+    The first thing to run after an abort or a run that felt rough: it shows whether
+    control cycles ran long, when, and what the success rate did.
+    """
+    import numpy as np
+
+    from .data import load_run
+    from .data.quality import assess_run
+
+    run = load_run(args.log)
+    report = assess_run(run)
+    print(report.summary())
+
+    dt_ms = run.column("dt_s") * 1e3
+    success = run.success_rate
+    late = np.flatnonzero(dt_ms > 1.5)
+    print(f"\ncontrol period: median {np.median(dt_ms):.3f} ms, "
+          f"p99 {np.percentile(dt_ms, 99):.3f} ms, max {dt_ms.max():.3f} ms")
+    print(f"cycles over 1.5 ms: {late.size} of {run.n_samples} "
+          f"({100.0 * late.size / max(run.n_samples, 1):.3f} %)")
+    if late.size:
+        t = run.time_s
+        print(f"  first at t = {t[late[0]] - t[0]:.3f} s, "
+              f"last at t = {t[late[-1]] - t[0]:.3f} s")
+        print("  A dropped frame makes Control extrapolate the command; the resulting")
+        print("  discontinuity is what you hear as a torque spike.")
+
+    if args.plot:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        t = run.time_s - run.time_s[0]
+        fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+        axes[0].plot(t, dt_ms, lw=0.5)
+        axes[0].axhline(1.5, color="r", ls="--", lw=1)
+        axes[0].set_ylabel("control period [ms]")
+        axes[1].plot(t, success, lw=0.8)
+        axes[1].set_ylabel("success rate")
+        axes[1].set_ylim(0, 1.05)
+        axes[2].plot(t, run.tau_J, lw=0.5)
+        axes[2].set_ylabel("tau_J [Nm]")
+        axes[2].set_xlabel("t [s]")
+        for ax in axes:
+            ax.grid(alpha=0.3)
+            for k in late:
+                ax.axvline(t[k], color="r", alpha=0.15, lw=0.5)
+        fig.suptitle(f"{args.log} -- red lines mark cycles over 1.5 ms")
+        fig.tight_layout()
+        out = Path(args.plot)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out, dpi=130)
+        plt.close(fig)
+        print(f"\nwrote {out}")
+
+    return 0 if report.ok else 1
+
+
 def cmd_fit_plane(args) -> int:
     """Fit a wall plane from >=3 measured flange positions."""
     points = np.atleast_2d(np.loadtxt(args.points, delimiter=","))
@@ -371,6 +431,11 @@ def build_parser() -> argparse.ArgumentParser:
     vf = sub.add_parser("verify-fk", help="compare a logged O_T_EE against the URDF FK")
     vf.add_argument("--log", required=True)
     vf.set_defaults(func=cmd_verify_fk)
+
+    ins = sub.add_parser("inspect", help="quality report for a collected run")
+    ins.add_argument("--log", required=True)
+    ins.add_argument("--plot", help="also write a diagnostic PNG here")
+    ins.set_defaults(func=cmd_inspect)
 
     fp = sub.add_parser("fit-plane", help="fit a wall plane from touch points")
     fp.add_argument("--points", required=True, help="CSV of x,y,z rows in the base frame")

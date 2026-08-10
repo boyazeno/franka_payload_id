@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <sstream>
+
+#include <sys/mman.h>
 
 namespace fpi {
 
@@ -12,6 +15,21 @@ const Vector7 kQdMax{{2.1750, 2.1750, 2.1750, 2.1750, 2.6100, 2.6100, 2.6100}};
 const Vector7 kQddMax{{15.0, 7.5, 10.0, 12.5, 15.0, 20.0, 20.0}};
 const Vector7 kQdddMax{{7500.0, 3750.0, 5000.0, 6250.0, 7500.0, 10000.0, 10000.0}};
 const Vector7 kTauMax{{87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0}};
+
+bool lockMemory(std::string* error_message) {
+  if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+    if (error_message != nullptr) {
+      *error_message = std::string("mlockall failed: ") + std::strerror(errno) +
+                       ". Run the container with --ulimit memlock=-1, or raise the "
+                       "memlock limit for the realtime group on the host.";
+    }
+    return false;
+  }
+  // Touch a slab of stack so the pages behind it are resident before the loop starts.
+  volatile char stack_probe[512 * 1024];
+  std::memset(const_cast<char*>(stack_probe), 0, sizeof(stack_probe));
+  return true;
+}
 
 void setCollectionBehavior(franka::Robot& robot) {
   robot.setCollisionBehavior(

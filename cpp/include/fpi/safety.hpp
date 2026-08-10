@@ -21,6 +21,15 @@ extern const Vector7 kQddMax;
 extern const Vector7 kQdddMax;
 extern const Vector7 kTauMax;
 
+// Locks the process's pages into RAM and pre-faults a stack region.
+//
+// A major page fault inside the 1 kHz callback costs far more than the ~300 us budget,
+// so the command for that cycle is late, Control extrapolates, and the resulting
+// discontinuity shows up as a torque spike. mlockall() is cheap insurance and the
+// standard first step for any PREEMPT_RT process. Returns false (with a message) if the
+// lock could not be taken -- typically a missing memlock ulimit.
+bool lockMemory(std::string* error_message);
+
 // Conservative collision thresholds. Deliberately high: during collection the load is
 // configured as zero while a real tool is attached, so the robot's own estimate of
 // external torque is large by construction and default thresholds trip immediately.

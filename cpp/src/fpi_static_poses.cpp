@@ -115,6 +115,13 @@ int main(int argc, char** argv) {
       }
     }
 
+    std::string lock_error;
+    if (!fpi::lockMemory(&lock_error)) {
+      std::cerr << "WARNING: " << lock_error << "\n"
+                << "  Continuing, but page faults in the 1 kHz loop may cause dropped\n"
+                << "  frames and torque spikes.\n";
+    }
+
     const std::string ip = args.require("ip");
     franka::Robot robot(ip, franka::RealtimeConfig::kEnforce, 5000);
     fpi::setCollectionBehavior(robot);

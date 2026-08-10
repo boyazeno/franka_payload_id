@@ -182,6 +182,13 @@ int main(int argc, char** argv) {
 
     if (args.flag("simulate")) return simulate(args, played);
 
+    std::string lock_error;
+    if (!fpi::lockMemory(&lock_error)) {
+      std::cerr << "WARNING: " << lock_error << "\n"
+                << "  Continuing, but page faults in the 1 kHz loop may cause dropped\n"
+                << "  frames and torque spikes.\n";
+    }
+
     const std::string ip = args.require("ip");
     std::signal(SIGINT, handleSignal);
 
@@ -234,8 +241,9 @@ int main(int argc, char** argv) {
               << " s\n";
 
     fpi::StateLog log(played.size() + 2000);
-    std::size_t index = 0;
     double elapsed = 0.0;
+    std::size_t skipped_ticks = 0;
+    double worst_period_ms = 0.0;
 
     std::cout << "executing ...\n";
     const std::string started_at = fpi::isoTimestampNow();
@@ -243,8 +251,26 @@ int main(int argc, char** argv) {
     try {
       robot.control([&](const franka::RobotState& state,
                         franka::Duration period) -> franka::JointPositions {
-        elapsed += period.toSec();
-        log.push(state, period.toSec());
+        const double dt = period.toSec();
+        elapsed += dt;
+        log.push(state, dt);
+
+        if (dt > 1.5e-3) {
+          ++skipped_ticks;
+          worst_period_ms = std::max(worst_period_ms, dt * 1e3);
+        }
+
+        // Index by ELAPSED TIME, not by callback count.
+        //
+        // When a packet is lost, this callback is next invoked with period = 2 ms (or
+        // more) and Control has meanwhile extrapolated the commanded position forward.
+        // Advancing a counter by one would leave our next command a sample BEHIND that
+        // extrapolation -- a backward step, which libfranka's rate limiter turns into a
+        // maximum-acceleration lunge. One audible spike per dropped frame. Indexing by
+        // time keeps the command consistent with the clock Control is extrapolating on,
+        // so a drop costs a skipped sample instead of a discontinuity.
+        const auto index = static_cast<std::size_t>(
+            std::llround(elapsed * played.sample_rate_hz));
 
         if (index >= played.size() || g_stop.load()) {
           return franka::MotionFinished(franka::JointPositions(played.q.back()));
@@ -260,9 +286,7 @@ int main(int argc, char** argv) {
         std::array<double, 7> target = played.q[index];
         for (int j = 0; j < 7; ++j) target[j] += offset[j] * weight;
 
-        franka::JointPositions command(target);
-        ++index;
-        return command;
+        return franka::JointPositions(target);
       });
     } catch (const franka::ControlException& e) {
       std::cerr << "control exception: " << e.what() << "\n";
@@ -296,6 +320,20 @@ int main(int argc, char** argv) {
     log.write(args.require("out"), meta);
     std::cout << "wrote " << args.require("out") << ".bin (" << log.size() << " samples, "
               << elapsed << " s)\n";
+
+    std::cout << "communication: " << skipped_ticks << " of " << log.size()
+              << " control cycles ran long";
+    if (skipped_ticks > 0) {
+      std::cout << " (worst " << worst_period_ms << " ms)";
+    }
+    std::cout << ", final success rate " << final_state.control_command_success_rate
+              << "\n";
+    if (log.size() > 0 &&
+        static_cast<double>(skipped_ticks) / static_cast<double>(log.size()) > 0.001) {
+      std::cout << "  WARNING: dropped frames make Control extrapolate the command, which\n"
+                   "  shows up as torque spikes. Run `fpi_check` and see the README\n"
+                   "  section 'Dropped frames' before trusting this data.\n";
+    }
     return 0;
   } catch (const franka::Exception& e) {
     std::cerr << "franka error: " << e.what() << "\n";
