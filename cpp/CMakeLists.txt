@@ -3,6 +3,7 @@
 #
 # The CMake package is called `Franka` with a capital F and exports the imported target
 # Franka::Franka -- not `libfranka`.
+cmake_minimum_required(VERSION 3.28)
 find_package(Franka 0.9 REQUIRED)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(Threads REQUIRED)

@@ -59,7 +59,7 @@ int main(int argc, char** argv) {
     const double seconds = args.number("seconds", 5.0);
 
     std::cout << "connecting to " << ip << " ...\n";
-    franka::Robot robot(ip);
+    franka::Robot robot(ip, franka::RealtimeConfig::kIgnore);
     std::cout << "connected.\n";
 
     const franka::RobotState initial = robot.readOnce();

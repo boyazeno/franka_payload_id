@@ -39,21 +39,21 @@ self_collision_margin: 0.03
 # a wall plane placed in FRONT of the base would leave nothing to move in.
 walls:
   - name: wall_behind          # the wall the robot's back faces
-    normal: [1.0, 0.0, 0.0]
-    offset: 0.30              # n.p + d >= 0  <=>  x >= -0.30
-    measured: false
+    normal: [1.0, 1.0, 0.0]
+    offset: 0.40              # n.p + d >= 0  <=>  x >= -0.40
+    measured: true
 
   - name: wall_side           # the wall to the robot's right
-    normal: [0.0, 1.0, 0.0]
-    offset: 0.30              # n.p + d >= 0  <=>  y >= -0.30
-    measured: false
+    normal: [1.0, -1.0, 0.0]
+    offset: 0.40              # n.p + d >= 0  <=>  y >= -0.40
+    measured: true
 
 # Table / mounting surface. The base sits on it, so this is a floor constraint.
 table:
   name: table
   normal: [0.0, 0.0, 1.0]
   offset: -0.02             # z >= 0.02 m above the base frame origin
-  measured: false
+  measured: true
 
 # Belt-and-braces hard joint box, applied in ADDITION to the half-spaces and
 # independently of the trajectory optimiser's solution quality. Restricting the base

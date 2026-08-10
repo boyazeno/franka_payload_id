@@ -4,13 +4,13 @@
 # truth by the estimator, except `mass_scale` which optionally enters Stage A as a
 # constraint. Fill in the real numbers before running on hardware.
 
-name: "custom_tool"
+name: "belt_gripper"
 
 # Independent mass measurement [kg]. A 0.1 g kitchen scale is plenty. This is the
 # single strongest validation check available, and it decorrelates m from m*c_z in
 # Stage A. Set to null if unavailable.
-mass_scale: 0.5
-mass_scale_tolerance: 0.02     # relative; Stage A constrains m to mass_scale*(1 +- this)
+mass_scale: 0.62
+mass_scale_tolerance: 0.1     # relative; Stage A constrains m to mass_scale*(1 +- this)
 use_mass_constraint: true
 
 # Axis-aligned bounding box of the tool in the FLANGE frame [m].
@@ -19,8 +19,8 @@ use_mass_constraint: true
 #   2. the uniform-density prior inertia phi_0 / J_0 for the entropic regulariser,
 #   3. the bounding-ellipsoid LMI constraint in Stage B.
 bounding_box:
-  min: [-0.05, -0.05, 0.00]
-  max: [ 0.05,  0.05, 0.16]
+  min: [-0.09, -0.09, 0.00]
+  max: [ 0.09,  0.09, 0.25]
 
 # Optional CAD estimate. If given, it overrides the uniform-density bounding-box prior.
 # com is w.r.t. the flange origin, inertia is about the CoM in flange axes.

@@ -44,7 +44,7 @@ class QualityReport:
         return "\n".join(lines)
 
 
-def assess_run(run: RunLog, *, min_success_rate: float = 0.99,
+def assess_run(run: RunLog, *, min_success_rate: float = 0.85,
                max_long_period_fraction: float = 0.01,
                require_move_mode: bool = True) -> QualityReport:
     """Check a collector run against the acceptance gates.

@@ -194,7 +194,7 @@ int main(int argc, char** argv) {
 
     // A generous log_size means a reflex still leaves several seconds of post-mortem
     // data in the ControlException.
-    franka::Robot robot(ip, franka::RealtimeConfig::kEnforce, 5000);
+    franka::Robot robot(ip, franka::RealtimeConfig::kIgnore, 5000);
     fpi::setCollectionBehavior(robot);
     configureLoad(robot, args, args.flag("loaded"));
 

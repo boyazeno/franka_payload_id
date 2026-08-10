@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
       }
     }
 
-    franka::Robot robot(args.require("ip"), franka::RealtimeConfig::kEnforce, 5000);
+    franka::Robot robot(args.require("ip"), franka::RealtimeConfig::kIgnore, 5000);
     fpi::setCollectionBehavior(robot);
 
     std::cout << "moving ...\n";
