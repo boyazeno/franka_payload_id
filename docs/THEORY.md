@@ -403,6 +403,16 @@ where $J_{p_k}$ is the translational Jacobian of the offset point, obtained by s
 the frame Jacobian: $J_p = J_v - [R\,\text{offset}]_\times J_\omega$.
 `test_half_space_jacobian_matches_finite_differences` checks it.
 
+**The tool counts as part of the robot.** Its bounding sphere -- derived from the box in
+`config/tool.yaml` -- is appended to the monitored points automatically, so both the
+excitation trajectory and the static poses keep the *tool*, not just the flange, clear of
+the walls. It is also screened against the upper arm and forearm, because the Panda's own
+self-collision avoidance models the robot alone and a flange-mounted tool is invisible to
+it. The wrist is excluded from that screen: the tool is bolted just beyond it and sits
+inside its own bounding sphere there by construction. Static poses are additionally
+checked against the torque budget, since holding a pose against gravity for seconds is as
+much a torque demand as moving through it.
+
 A hard box $q_1\in[-60°,+60°]$ is applied *in addition*. It is redundant when the
 optimiser succeeds and it is the guarantee that survives when it does not.
 
@@ -612,6 +622,9 @@ is entirely adequate — and is what the pipeline does automatically, saying so 
 | 7 | column scaling $D$ | `model/params.py::scaling_matrix` | `test_scaling_matrix_non_dimensionalises`, `test_relative_uncertainty_is_scale_invariant` |
 | 7 | D-optimal objective | `traj/optimize.py::_information_term`, `regressor_condition` | `test_reported_condition_depends_on_the_length_scale` |
 | 7 | feasibility restoration | `traj/optimize.py::_restore_feasibility` | `test_reference_trajectory_is_feasible` |
+| 7.1 | tool bounding sphere | `config.py::Workspace.load`, `ToolSpec.bounding_sphere` | `test_tool_bounding_sphere_is_monitored`, `test_bigger_tool_shrinks_the_feasible_set` |
+| 7.1 | tool self-collision screen | `traj/constraints.py::tool_self_collision_clearance` | `test_self_collision_check_ignores_the_wrist`, `test_self_collision_catches_a_long_folded_tool` |
+| 7.1 | static torque budget | `traj/optimize.py::optimize_static_poses` | `test_static_poses_respect_the_torque_budget` |
 | 7.1 | half-space constraint | `traj/constraints.py::half_space_clearances` | `test_check_flags_joint_limit_violation`, `test_check_flags_joint_one_box` |
 | 7.1 | analytic constraint gradient | `traj/constraints.py::half_space_jacobian` | `test_half_space_jacobian_matches_finite_differences` |
 | 7.1 | export safety gate | `traj/export.py::export_trajectory` | `test_export_refuses_placeholder_workspace` |

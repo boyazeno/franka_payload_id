@@ -41,6 +41,7 @@ from .constraints import (
     check_trajectory,
     half_space_clearances,
     make_torque_predictor,
+    tool_self_collision_clearance,
 )
 from .fourier import N_JOINTS, FourierTrajectory
 
@@ -270,7 +271,8 @@ def optimize_trajectory(pm: PandaModel, ws: Workspace, limits: PandaLimits, *,
 # ---------------------------------------------------------------------------
 def optimize_static_poses(pm: PandaModel, ws: Workspace, limits: PandaLimits, *,
                           n_poses: int = 50, length_scale: float = 0.1,
-                          seed: int = 0, n_candidates: int = 4000) -> np.ndarray:
+                          seed: int = 0, n_candidates: int = 4000,
+                          payload_phi: np.ndarray | None = None) -> np.ndarray:
     r"""Greedily select static poses that condition the four-column gravity regressor.
 
     Candidates are sampled uniformly inside the derated joint box, filtered through the
@@ -287,13 +289,25 @@ def optimize_static_poses(pm: PandaModel, ws: Workspace, limits: PandaLimits, *,
 
     rng = np.random.default_rng(seed)
     scale = np.array([1.0, length_scale, length_scale, length_scale])
+    # A static pose still has to be held against gravity, and it is held for seconds --
+    # so the torque budget applies here just as it does to the excitation trajectory.
+    torque_fn = make_torque_predictor(pm, payload_phi)
+    zero = np.zeros(pm.nv)
 
     feasible: list[np.ndarray] = []
     blocks: list[np.ndarray] = []
+    rejected = {"workspace": 0, "self_collision": 0, "torque": 0}
     for _ in range(int(n_candidates)):
         q = rng.uniform(limits.q_min, limits.q_max)
         q[0] = rng.uniform(ws.q1_min, ws.q1_max)
         if np.min(half_space_clearances(pm, ws, q)) < 0.0:
+            rejected["workspace"] += 1
+            continue
+        if tool_self_collision_clearance(pm, ws, q) < 0.0:
+            rejected["self_collision"] += 1
+            continue
+        if np.max(np.abs(torque_fn(q, zero, zero)) / limits.tau_max) > 1.0:
+            rejected["torque"] += 1
             continue
         feasible.append(q)
         blocks.append(gravity_regressor(pm, q) * scale)
@@ -302,8 +316,11 @@ def optimize_static_poses(pm: PandaModel, ws: Workspace, limits: PandaLimits, *,
 
     if len(feasible) < n_poses:
         raise RuntimeError(
-            f"only {len(feasible)} of {n_candidates} sampled configurations satisfy the "
-            "workspace constraints; loosen config/workspace.yaml or raise n_candidates")
+            f"only {len(feasible)} of {n_candidates} sampled configurations are usable "
+            f"(rejected: {rejected['workspace']} on the workspace half-spaces, "
+            f"{rejected['self_collision']} on tool self-collision, "
+            f"{rejected['torque']} on the static torque budget). Loosen "
+            "config/workspace.yaml, shrink the tool bounding box, or raise n_candidates.")
 
     chosen: list[int] = []
     # Seed with a small random subset so the information matrix starts invertible.

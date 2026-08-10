@@ -140,6 +140,15 @@ class Workspace:
     q1_min: float
     q1_max: float
     monitored_points: list[MonitoredPoint]
+    tool_point: MonitoredPoint | None = None
+    """The tool's bounding sphere, kept separately as well as in ``monitored_points``.
+
+    It appears in ``monitored_points`` for the wall/table check, and here so the
+    self-collision check can single it out: the robot's own self-collision avoidance
+    knows nothing about a custom tool bolted to the flange.
+    """
+
+    self_collision_margin: float = 0.03
 
     @property
     def half_spaces(self) -> list[HalfSpace]:
@@ -169,9 +178,11 @@ class Workspace:
         ]
         # The tool is a rigid extension of the flange, so its bounding sphere is
         # appended automatically rather than duplicated in workspace.yaml.
+        tool_point = None
         if tool is not None:
             centre, radius = tool.bounding_sphere()
-            pts.append(MonitoredPoint("panda_link8", centre, radius))
+            tool_point = MonitoredPoint("panda_link8", centre, radius)
+            pts.append(tool_point)
 
         box = raw.get("joint_box", {})
         return Workspace(
@@ -181,6 +192,8 @@ class Workspace:
             q1_min=float(box.get("q1_min", -np.inf)),
             q1_max=float(box.get("q1_max", np.inf)),
             monitored_points=pts,
+            tool_point=tool_point,
+            self_collision_margin=float(raw.get("self_collision_margin", 0.03)),
         )
 
 

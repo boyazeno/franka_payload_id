@@ -276,3 +276,78 @@ def test_torque_limit_is_enforced(panda, cfg, reference_traj):
     t = np.linspace(0.0, reference_traj.period, 200, endpoint=False)
     q, qd, qdd = reference_traj(t)
     assert np.abs(predict(q, qd, qdd)).max() > np.abs(bare(q, qd, qdd)).max()
+
+
+# ---------------------------------------------------------------- tool geometry
+def test_tool_bounding_sphere_is_monitored(cfg):
+    """`fpi poses generate` must account for the tool's size, not just the flange."""
+    assert cfg.workspace.tool_point is not None
+    centre, radius = cfg.tool.bounding_sphere()
+    assert cfg.workspace.tool_point.frame == "panda_link8"
+    np.testing.assert_allclose(cfg.workspace.tool_point.offset, centre)
+    assert cfg.workspace.tool_point.radius == pytest.approx(radius)
+    # and it participates in the wall/table clearance check
+    assert any(mp is cfg.workspace.tool_point for mp in cfg.workspace.monitored_points)
+
+
+def test_bigger_tool_shrinks_the_feasible_set(panda, cfg):
+    import dataclasses
+
+    from franka_payload_id.config import Workspace
+
+    limits = cfg.derated_limits()
+    counts = []
+    for extent in (0.16, 0.80):
+        tool = dataclasses.replace(cfg.tool, bbox_max=np.array([0.05, 0.05, extent]))
+        ws = Workspace.load(tool=tool)
+        rng = np.random.default_rng(0)
+        ok = 0
+        for _ in range(300):
+            q = rng.uniform(limits.q_min, limits.q_max)
+            q[0] = rng.uniform(ws.q1_min, ws.q1_max)
+            if half_space_clearances(panda, ws, q).min() >= 0.0:
+                ok += 1
+        counts.append(ok)
+    assert counts[0] > counts[1], "tool size does not affect pose feasibility"
+
+
+def test_self_collision_check_ignores_the_wrist(panda, cfg):
+    """The wrist is rigidly adjacent to the tool; only the arm can really be struck.
+
+    At the home pose link5/link6 sit inside the tool's bounding sphere by construction.
+    Including them would reject every configuration, so the check covers the upper arm
+    and forearm only.
+    """
+    from franka_payload_id.traj.constraints import tool_self_collision_clearance
+
+    home = np.array([0.0, -0.6, 0.0, -2.0, 0.0, 1.6, 0.785])
+    assert tool_self_collision_clearance(panda, cfg.workspace, home) > 0.0
+
+
+def test_self_collision_catches_a_long_folded_tool(panda, cfg):
+    import dataclasses
+
+    from franka_payload_id.config import Workspace
+    from franka_payload_id.traj.constraints import tool_self_collision_clearance
+
+    long_tool = dataclasses.replace(cfg.tool, bbox_max=np.array([0.05, 0.05, 1.2]))
+    ws = Workspace.load(tool=long_tool)
+    limits = cfg.derated_limits()
+    rng = np.random.default_rng(1)
+    assert any(
+        tool_self_collision_clearance(panda, ws, rng.uniform(limits.q_min, limits.q_max)) < 0.0
+        for _ in range(300)), "a 1.2 m tool never registers a self-collision"
+
+
+def test_static_poses_respect_the_torque_budget(panda, cfg):
+    """A static pose is held against gravity for seconds; the budget applies."""
+    from franka_payload_id.model import bounding_box_prior
+
+    payload = bounding_box_prior(2.0, cfg.tool.bbox_min, cfg.tool.bbox_max).to_phi()
+    limits = cfg.derated_limits()
+    poses = optimize_static_poses(panda, cfg.workspace, limits, n_poses=20, seed=0,
+                                  n_candidates=1500, payload_phi=payload)
+    loaded = panda.with_payload(payload)
+    zero = np.zeros(7)
+    tau = np.array([loaded.rnea(q, zero, zero) for q in poses])
+    assert np.max(np.abs(tau) / limits.tau_max) <= 1.0

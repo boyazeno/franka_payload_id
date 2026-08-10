@@ -59,6 +59,7 @@ class ConstraintReport:
     max_acceleration_ratio: float = 0.0
     max_jerk_ratio: float = 0.0
     max_torque_ratio: float = 0.0
+    min_self_collision_clearance_m: float = np.inf
 
     @property
     def ready_for_hardware(self) -> bool:
@@ -70,6 +71,9 @@ class ConstraintReport:
             lines.append("  NOT READY FOR HARDWARE: workspace planes are unmeasured placeholders")
         lines.append(f"  min clearance to any wall/table : {self.min_half_space_clearance_m:+.4f} m"
                      + (f"  (worst: {self.worst_half_space})" if self.worst_half_space else ""))
+        if np.isfinite(self.min_self_collision_clearance_m):
+            lines.append("  min tool-to-arm clearance      : "
+                         f"{self.min_self_collision_clearance_m:+.4f} m")
         lines.append(f"  max joint-position excess      : {self.max_position_excess_rad:.4f} rad")
         lines.append(f"  max |qd| / limit               : {self.max_velocity_ratio:.3f}")
         lines.append(f"  max |qdd| / limit              : {self.max_acceleration_ratio:.3f}")
@@ -139,6 +143,44 @@ def half_space_jacobian(pm: PandaModel, ws: Workspace, q: np.ndarray) -> np.ndar
     return out
 
 
+# Upper arm and forearm only. The wrist (link5-link7) is deliberately excluded: the
+# tool is bolted just beyond it, so those links sit INSIDE the tool's bounding sphere at
+# any perfectly safe configuration -- at the home pose the gaps come out at -0.005 m and
+# -0.010 m. That is structural proximity, not a collision, and a sphere model cannot
+# tell the two apart there. What a flange tool can genuinely strike is the arm it folds
+# back onto.
+_SELF_COLLISION_LINKS = ("panda_link2", "panda_link3", "panda_link4")
+
+
+def tool_self_collision_clearance(pm: PandaModel, ws: Workspace, q: np.ndarray) -> float:
+    """Clearance [m] between the tool's bounding sphere and the robot's own arm.
+
+    The Panda's built-in self-collision avoidance models *the robot*. It knows nothing
+    about a custom tool bolted to the flange, so a long tool can be folded into the
+    forearm with nothing to stop it. Returns ``+inf`` when no tool is configured.
+
+    This is a coarse sphere-vs-sphere test against the upper arm and forearm only (see
+    :data:`_SELF_COLLISION_LINKS`). It is a screen, not a proof: for a long or awkwardly
+    shaped tool, review the trajectory visually with ``fpi traj view`` as well.
+    """
+    if ws.tool_point is None:
+        return np.inf
+
+    pm.forward(q)
+    tool_centre = pm.data.oMf[pm.model.getFrameId(ws.tool_point.frame)].act(
+        ws.tool_point.offset)
+
+    worst = np.inf
+    for mp in ws.monitored_points:
+        if mp.frame not in _SELF_COLLISION_LINKS:
+            continue
+        centre = pm.data.oMf[pm.model.getFrameId(mp.frame)].act(mp.offset)
+        gap = float(np.linalg.norm(tool_centre - centre)
+                    - ws.tool_point.radius - mp.radius - ws.self_collision_margin)
+        worst = min(worst, gap)
+    return worst
+
+
 def check_configurations(pm: PandaModel, ws: Workspace, limits: PandaLimits,
                          q: np.ndarray) -> ConstraintReport:
     """Check a set of configurations against joint limits and the half-spaces."""
@@ -160,6 +202,15 @@ def check_configurations(pm: PandaModel, ws: Workspace, limits: PandaLimits,
         report.violations.append(
             f"joint 1 leaves the hard safety box [{ws.q1_min:.3f}, {ws.q1_max:.3f}] rad "
             f"(range visited: [{q1.min():.3f}, {q1.max():.3f}])")
+        report.ok = False
+
+    worst_self = min((tool_self_collision_clearance(pm, ws, conf) for conf in q),
+                     default=np.inf)
+    report.min_self_collision_clearance_m = worst_self
+    if worst_self < 0.0:
+        report.violations.append(
+            f"the tool's bounding sphere overlaps a robot link by {-worst_self:.4f} m. "
+            "The Panda's own self-collision avoidance does not know about the tool.")
         report.ok = False
 
     worst = np.inf

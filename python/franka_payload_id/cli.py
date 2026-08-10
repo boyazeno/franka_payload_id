@@ -141,7 +141,8 @@ def cmd_poses_generate(args) -> int:
         pm, cfg.workspace, cfg.derated_limits(),
         n_poses=int(args.count or st["n_poses"]),
         length_scale=float(cfg.experiment.trajectory["optimizer"]["length_scale"]),
-        seed=int(args.seed if args.seed is not None else st["seed"]))
+        seed=int(args.seed if args.seed is not None else st["seed"]),
+        payload_phi=_payload_prior_phi(cfg))
 
     from .model import stack_gravity_regressor
     scale = np.array([1.0, 0.1, 0.1, 0.1])

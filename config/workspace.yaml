@@ -22,6 +22,17 @@
 # Safety clearance added on top of every monitored sphere radius [m].
 margin: 0.10
 
+# Clearance required between the TOOL's bounding sphere and the robot's own upper arm
+# and forearm [m]. The Panda's built-in self-collision avoidance models the robot only;
+# it knows nothing about a custom tool bolted to the flange, so a long tool can be
+# folded into the forearm with nothing to stop it.
+#
+# The wrist (link5-link7) is deliberately excluded from this check: the tool is bolted
+# just beyond it and therefore sits inside the tool's bounding sphere at any perfectly
+# safe pose. It is a coarse sphere test -- a screen, not a proof. Review long or
+# awkwardly shaped tools visually with `fpi traj view` as well.
+self_collision_margin: 0.03
+
 # Placeholder geometry assumes the base stands 0.30 m clear of each wall, with the
 # base +x axis pointing away from the corner. Combined with the joint_box below this
 # keeps the arm in the forward sector without collapsing the reachable workspace --
